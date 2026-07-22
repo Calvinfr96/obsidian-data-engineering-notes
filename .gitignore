@@ -1,0 +1,9 @@
+# Ignore workspace layout states that shift constantly
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+
+# Ignore cache directories
+.obsidian/cache/
+
+# Ignore miscellaneous files
+,DS_Store
