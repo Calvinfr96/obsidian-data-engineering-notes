@@ -6,4 +6,4 @@
 .obsidian/cache/
 
 # Ignore miscellaneous files
-,DS_Store
+.DS_Store
