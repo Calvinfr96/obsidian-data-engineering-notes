@@ -1,0 +1,12 @@
+{
+  "editor:toggle-comments": [],
+  "outline:open": [
+    {
+      "modifiers": [
+        "Mod",
+        "Shift"
+      ],
+      "key": "O"
+    }
+  ]
+}

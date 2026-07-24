@@ -1,4 +1,5 @@
 {
   "folder": "00_daily_logs",
-  "template": "00_daily_logs/Daily Review Template"
+  "template": "00_daily_logs/Daily Review Template",
+  "format": "YYYY-MM-DD"
 }

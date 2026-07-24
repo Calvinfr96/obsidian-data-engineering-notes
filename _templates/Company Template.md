@@ -16,6 +16,9 @@ url:
   - **Ingestion/Orchestration:** (e.g., Airflow, dbt, Flink, Kafka)
   - **Cloud Infrastructure:** (e.g., AWS, GCP, Azure)
 - **Engineering Blog Notes:** *(Paste 1-2 interesting takeaways from their tech blog here)*
+- **Company Context:** *(Helps answer the question 'Why XYZ Company?'*
+	- **Product Facts:**
+	- **Culture Facts:**
 
 ---
 

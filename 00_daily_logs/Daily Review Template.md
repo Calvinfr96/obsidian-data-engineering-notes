@@ -1,6 +1,6 @@
 ---
 type: daily-log
-date: 2026-07-22
+date: "{{date:MM/DD/YYYY}}" 
 mood: 🟢 Focus / 🟡 Fatigue / 🔴 Burnout
 ---
 

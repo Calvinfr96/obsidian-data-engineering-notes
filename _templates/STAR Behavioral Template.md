@@ -27,7 +27,9 @@ skills_highlighted: (e.g., System Reliability, Cross-functional Communication, O
 - **The Technical Implementation:** 
   - *Step 1:* (e.g., "I rewrote the row-by-row insertion logic into an optimized batch ingestion stream using Python generator functions.")
   - *Step 2:* (e.g., "I decoupled the database writes by introducing a message queue buffer to absorb spike loads.")
+  - **Be sure to explain what contributions YOU maid to the technical implementation, not what contributions were made by your team.**
 - **Trade-offs Evaluated:** What alternatives did you consider, and why did you pick your solution? (e.g., "I chose eventual consistency over strong consistency because latency was our primary bottleneck.")
+- **Uncertainty:** Discuss any uncertainties faced during implementation.
 - **Collaboration & Friction:** How did you handle pushback or coordinate with other stakeholders/teams?
 
 ---
@@ -38,3 +40,4 @@ skills_highlighted: (e.g., System Reliability, Cross-functional Communication, O
 - **Business/Team Metrics:** (e.g., Eliminated database downtime, saving the company estimated engineering support hours per week.)
 - **💡 The Data Engineering Connection:** 
   *How to pitch this story in your interview:* "While this was a software engineering project, it directly mirrors core data engineering principles: optimizing ingestion throughput, managing resource limitations, and designing data pipelines to tolerate upstream data failures."
+- To wrap up the story, explain the **non-technical** lessions learned. For example, "I learned that optimization work deserves the same level of rollout planning as customer-facing features."
