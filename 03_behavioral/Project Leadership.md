@@ -9,7 +9,7 @@ skills_highlighted: Optimization
 *A brief summary to center your memory before speaking.*
 - **Context:** Working as a Software Engineer at Amazon Ads.
 - **The Core Problem:** ElastiCache memory utilization was hitting peak thresholds as our creative catalog expanded. This caused eviction spikes, increasing or P99 latency.
-- **The Ultimate Outcome:** By analyzing our team's data access patterns, I noticed we were caching a lot of unnecessary metadata associated with the creative payloads. I refactored our serialization logic to only cache a stripped-down, high-utility schema. I also introduced a dynamic TTL based on creative popularity. The redesign reduced or ElastiCache memory footprint by 35% and improved our cache hit rate by 8%. P99 latency was also reduced by 12 milliseconds.
+- **The Ultimate Outcome:** By analyzing our team's data access patterns, I noticed we were caching a lot of unnecessary metadata associated with the creative payloads. I refactored our serialization logic to only cache a stripped-down, high-utility schema. I also introduced a dynamic TTL based on creative popularity. The redesign reduced or ElastiCache memory footprint by 15% and improved our cache hit rate by 8%. P99 latency was also reduced by 12 milliseconds.
 
 ---
 

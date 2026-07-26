@@ -3,7 +3,7 @@ category: 👥 Conflict / 📈 Impact
 skills_highlighted: Cross-functional Communication, Optimization
 ---
 
-# 🎭 STAR: Conflict Resolution
+# 🎭 STAR: Influencing Without Authority
 
 ## 📌 Elevator Pitch (The 30-Second Summary)
 *A brief summary to center your memory before speaking.*

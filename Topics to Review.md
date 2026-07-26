@@ -1,6 +1,6 @@
 Looking across all of your stories, I see recurring themes.
 
-## Distributed systems
+## Distributed systems ([[Distributed Systems Fundamentals|Link]])
 
 You mention:
 

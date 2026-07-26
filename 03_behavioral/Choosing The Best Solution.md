@@ -9,7 +9,7 @@ skills_highlighted: (e.g., System Reliability, Cross-functional Communication, O
 *A brief summary to center your memory before speaking.*
 - **Context:** Working as a Software Engineer at Amazon Ads.
 - **The Core Problem:** Highly popular creatives caused isolated traffic spikes in a single shard within an AWS region. These traffic spikes caused latency to rise above our strict SLAs. We needed to redesign how our request assignment and caching strategies
-- **The Ultimate Outcome:** 
+- **The Ultimate Outcome:** The routing redesign reduced shard hotspotting, lowered peak shard CPU utilization by roughly 20%, and improved p99 latency during holiday traffic without requiring us to expand the EC2 fleet.
 
 ---
 

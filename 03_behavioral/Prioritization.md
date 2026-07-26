@@ -9,7 +9,7 @@ skills_highlighted: Cross-functional Communication, Optimization
 *A brief summary to center your memory before speaking.*
 - **Context:** Working as a Software Engineer at Amazon Ads.
 - **The Core Problem:** I needed to grant a major advertising client secure access to encrypted zip code information while working on operational issues during my on-call rotation.
-- **The Ultimate Outcome:** By switching all in-person or virtual meetings to asynchronous forms of communication, as well as affectively time-boxing my engineering work and on-call duties, I was able to grant the client access to the information they needed to effectively execute their advertising campaign.
+- **The Ultimate Outcome:** By switching all in-person or virtual meetings to asynchronous forms of communication, as well as affectively time-boxing my engineering work and on-call duties, I was able to complete all sprint deliverables while reducing operational overhead for the team.
 
 ---
 
