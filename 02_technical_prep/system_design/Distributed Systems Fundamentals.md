@@ -748,7 +748,7 @@ Interviewers don't expect you to memorize every implementation, but it's good to
 	```
 	- Is idempotent because every rerun sets the value to the same result. The key idea is that **the operation itself** must be safe to repeat.
 
-## 9.  Retries With Exponential Backoff
+## 10.  Retries With Exponential Backoff
 
 - An important thing to understand about distributed systems is that they **fail regularly**.  Networks time out. Services become overloaded. Containers restart. The question isn't **if** failures happen—it's **how your system responds**.
 - A mistake many engineers make is thinking, "If a request fails, just try again immediately." Ironically, that's often the worst thing you can do.
@@ -847,7 +847,7 @@ Locking and synchronization resolve them
 ```
 - This is a coherent mental model of distributed systems, and it's the kind of reasoning interviewers look for.
 
-## 10. Circuit Breakers
+## 11. Circuit Breakers
 
 - Retries help recover from temporary failures, but what if a downstream service stays unhealthy for minutes instead of seconds? At some point, continuing to send requests only makes things worse.
 - **Circuit breakers** answer the question: "When should we stop retrying, and fail instead?"
@@ -1122,7 +1122,7 @@ Recovered?
 Resume traffic
 ```
 
-## 11. Synchronization
+## 12. Synchronization
 
 - If a race condition answers "what went wrong?", synchronization answers "How do we guarantee operations happen in the correct order?"
 - Synchronization is the process of coordinating multiple operations so they occur in the correct order or at the correct time. Think of it as establishing **dependencies** between operations.
@@ -1358,7 +1358,7 @@ No race condition
 		- Why sleeping isn't synchronization
 		- Stronger consistency for a critical workflow
 
-## 12. Deployment Strategies
+## 13. Deployment Strategies
 
 - Interviewers don't expect you to have operated a massive deployment platform. What they want to know is: "How would you reduce the risk of deploying new code to production?" **That's what deployment strategies are all about**.
 - The safest deployment strategy is one that **limits the blast radius** if something goes wrong.
@@ -1552,7 +1552,7 @@ Warehouse B
 	- Blue-Green asks "Can I switch traffic instantly and roll back instantly?"
 	- Canary asks "Should I trust this release with all users yet?"
 
-## 13. Shadow Traffic
+## 14. Shadow Traffic
 
 - Instead of only sending requests to a production service:
 	```
@@ -1719,7 +1719,7 @@ Warehouse B
 > 	I'd ensure the mirrored requests can't produce real side effects. That could mean routing them to sandbox versions of downstream services, mocking payment processors, or configuring the shadow environment to skip external writes while still collecting metrics.
 	- Generally speaking, read-only operations are generally safe to mirror. Write operations require additional safeguards.
 
-## 14. Feature Flags
+## 15. Feature Flags
 
 - Many people think a deployment automatically means users get a new feature. **Feature flags break that assumption**.
 - Imagine you've spent three months building a new recommendation engine. It's ready, but the Marketing department tells you that they're launching next Tuesday.
@@ -1871,7 +1871,7 @@ Warehouse B
 | Can the new system handle production traffic? | Shadow traffic      |
 | What if something goes wrong?                 | Rollback strategy   |
 
-## 15. Rollback Strategies
+## 16. Rollback Strategies
 
 - No matter how much testing you perform:
 	- Unit tests
