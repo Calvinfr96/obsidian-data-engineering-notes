@@ -1551,3 +1551,581 @@ Warehouse B
 	- Changes can be rolled much more quickly in a Blue-Green deployment than a Canary deployment.
 	- Blue-Green asks "Can I switch traffic instantly and roll back instantly?"
 	- Canary asks "Should I trust this release with all users yet?"
+
+## 13. Shadow Traffic
+
+- Instead of only sending requests to a production service:
+	```
+	User
+	
+	↓
+	
+	Current Service
+	```
+- You secretly duplicate the request:
+	```
+	                → Current Service (response returned)
+	User Request →
+	                → New Service (response ignored)
+	```
+	- The customer only sees the response from the current production service.
+	- The new service receives the exact same request, but **the response is discarded**.
+	- The user never knows a shadow request was sent to the new service.
+- Shadow traffic is useful because it tells you how a brand new or modified service will behave in production. You don't want customers using it yet, but you want to see how it behaves.
+	- The user doesn't know what's happening behind the scenes, but engineers can see the following metrics under real production load:
+		- CPU usage
+		- Memory usage
+		- Latency
+		- Error rates
+		- Database queries
+		- External API call
+
+### Shadow Traffic vs. Canary
+- Canary deployments are different than shadow traffic in that real customers are receiving responses from the new service and can be impacted by potential failures.
+
+|Canary|Shadow Traffic|
+|---|---|
+|Users receive new responses|Users receive old responses|
+|Small customer risk|No customer risk|
+|Validates customer experience|Validates operational behavior|
+|Can detect business logic bugs|Great for performance and stability testing|
+
+### Limitations
+- Interviewers love asking "Can shadow traffic fully validate a deployment?"
+	- The answer is no, because the responses aren't actually used in the workflow.
+- Shadow traffic can only tell you about:
+	- performance
+	- resource usage
+	- crashes
+	- latency
+- **It doesn't tell you if the business logic is correct**. That's why engineers will often compare responses offline after the requests are complete.
+
+### Common Examples
+- **Amazon Example:** Imagine your cache initialization fix. Suppose you rewrote the cache population logic. Would you immediately let production use it?
+	- Probably not. Instead:
+		```
+		Production Request
+		
+		↓
+		
+		Current Cache Logic
+		
+		↓
+		
+		Return Response
+		
+		↓
+		
+		Mirror Request
+		
+		↓
+		
+		New Cache Logic
+		
+		↓
+		
+		Measure latency
+		Measure cache hits
+		Measure errors
+		```
+		- Customers remain unaffected while you gather confidence.
+- **Data Engineering Example:** Suppose you've rewritten an ETL pipeline in Spark.mInstead of replacing the old pipeline, you run both:
+	```
+	Production Events
+	
+	↓
+	
+	Old Pipeline
+	
+	↓
+	
+	Warehouse A
+	
+	Same Events
+	
+	↓
+	
+	New Pipeline
+	
+	↓
+	
+	Warehouse B
+	```
+	- Next, you compare the following before promoting the new pipeline:
+		- Row counts
+		- Aggregates
+		- Processing time
+		- Error rates
+		- Resource usage
+	- This is essentially shadow traffic for data pipelines.
+
+### Tradeoffs
+- Advantages:
+	- Zero customer impact.
+	- Real production traffic.
+	- Excellent for performance validation.
+	- Great for observing resource usage.
+	- Safe way to validate major architectural changes.
+- Disadvantages:
+	- Requires extra infrastructure.
+	- Doesn't validate the customer experience directly.
+	- Doubles some compute costs.
+	- Downstream systems may need protection so mirrored requests don't cause duplicate side effects.
+		- For example, if the mirrored request actually charges a credit card, you've got a problem.
+		- Shadow environments often stub out or disable side effects like payments, emails, and notifications.
+- **Shadow traffic validates operational behavior, while canary deployments validate customer behavior**.
+
+### Hybrid Deployment Strategies
+- Many people think of deployment techniques as alternatives, but in mature engineering organizations they're often **combined**.
+- For example, a rollout might look like:
+	```
+	Development
+	
+	↓
+	
+	Testing
+	
+	↓
+	
+	Shadow Traffic
+	(Does it behave correctly?)
+	
+	↓
+	
+	Canary
+	(Do customers experience it correctly?)
+	
+	↓
+	
+	Rolling Deployment
+	(Gradually replace servers)
+	
+	↓
+	
+	100% Production
+	```
+- Each stage anwers a different question:
+
+|Stage|Question|
+|---|---|
+|Shadow|Can the new system handle real traffic?|
+|Canary|Do real users have a good experience?|
+|Rolling|Can we safely scale the deployment?|
+- This layered approach reduces risk at each step.
+### Common Interview Questions
+1. You're rewriting a Kafka consumer that processes millions of events per day. Would you choose a **canary deployment** or **shadow traffic** for the first production test? Why?
+> 	It depends on what I'm trying to validate. If I've significantly changed the internals of the consumer and want to evaluate throughput, latency, resource usage, or stability under real production load without affecting customers, I'd start with shadow traffic. If I need to validate the actual customer-facing behavior of the new version, I'd move to a canary deployment that gradually exposes real users while limiting risk.
+2. Suppose your shadow deployment sends mirrored requests to a service that processes credit card payments. What problem could occur, and how would you prevent it?
+> 	I'd ensure the mirrored requests can't produce real side effects. That could mean routing them to sandbox versions of downstream services, mocking payment processors, or configuring the shadow environment to skip external writes while still collecting metrics.
+	- Generally speaking, read-only operations are generally safe to mirror. Write operations require additional safeguards.
+
+## 14. Feature Flags
+
+- Many people think a deployment automatically means users get a new feature. **Feature flags break that assumption**.
+- Imagine you've spent three months building a new recommendation engine. It's ready, but the Marketing department tells you that they're launching next Tuesday.
+	- Instead of waiting until Tuesday to deploy, the feature can be deployed right away, but enabled later using a feature flag:
+		```
+		Deploy Code
+		
+		↓
+		
+		Feature Disabled
+		
+		↓
+		
+		Later...
+		
+		↓
+		
+		Enable Feature
+		```
+		- The code is in production, it's just not active until the it is explicitly enabled using the feature flag.
+- Example Implementation:
+	```python
+	if feature_enabled:
+	    use_new_recommendation_engine()
+	else:
+	    use_old_recommendation_engine()
+	```
+	- Changing the feature flag determines which code path is executed. No new deployments are required.
+- Feature flags are commonly used for:
+	- Gradual rollouts
+	- A/B testing
+	- Beta features
+	- Internal testing
+	- Emergency feature disablement
+	- Regional launches
+	- Customer-specific features
+- One subtle, but important point is that feature flags **cannot be used as a form of access control**. Feature flags only determine **whether code executes**. Authorization determines **who is allowed** to execute it.
+
+### Common Examples
+- Suppose it's Black Friday. Do you really want to deploy brand-new code?
+	- Probably not. Instead:
+		- Deploy it weeks earlier.
+		- Verify everything is stable.
+		- When the business is ready, flip the feature flag.
+	- The deployment risk and the business release become separate events.
+- Suppose you're launching a redesigned checkout phase
+	- Without a feature flag:
+		```
+		Deploy
+		
+		↓
+		
+		Everyone Uses New Checkout
+		```
+		- If there's a bug, everyone is affected.
+	- With a feature flag:
+		```
+		Deploy
+		
+		↓
+		
+		Feature Off
+		
+		↓
+		
+		Internal Employees
+		
+		↓
+		
+		10% Users
+		
+		↓
+		
+		50%
+		
+		↓
+		
+		100%
+		```
+		- You control exposure independently of deployment.
+
+### Feature Flag vs. Canary
+- Canary deployments are gradual. Some servers will run Version X of a software while other servers run Version Y.
+- A feature flag is usually binary. While it's off, every server runs the old logic. While it's on, every server runs the new logic. However, only one version of the software is deployed (the version with the feature flag).
+
+| Canary                         | Feature Flag                |
+| ------------------------------ | --------------------------- |
+| Controls deployment            | Controls functionality      |
+| Different software versions    | Same software version       |
+| Gradual infrastructure rollout | Gradual feature rollout     |
+| Often infrastructure-managed   | Usually application-managed |
+- The two approaches can be combined by using a percentage feature flag, instead of a binary feature flag. For example:
+	1. Deploy new code.
+	2. Keep feature disabled.
+	3. Enable for internal employees.
+	4. Enable for 1%.
+	5. Enable for 10%.
+	6. Enable for everyone.
+- The deployment happended once, but the rollout happened gradually because of the feature flag.
+- Data engineers frequently use feature flags for:
+	- New transformation logic
+	- New validation rules
+	- New data quality checks
+	- New enrichment sources
+	- Alternative algorithms
+
+### Feature Flag vs. Rollback
+- Suppose a new version of software introduces:
+	- Feature A
+	- Feature B (Performance improvements)
+- If Feature A is broken and there are no feature flags, everying (including Feature B) must be rolled back.
+- With feature flags, Feature A can be disabled while Feature B (and its performance improvements) remain in effect.
+
+### Tradeoffs
+- Advantages:
+	- Separate deployment from release.
+	- Instant enable/disable.
+	- Easy experimentation.
+	- A/B testing.
+	- Safer releases.
+	- Faster recovery from feature-specific issues.
+- Disadvantages:
+	- Over time, as more flags are added, your code becomes difficult to understand and maintain. For example:
+		```
+		if flag_A:
+		
+		else:
+		
+		if flag_B:
+		
+		else:
+		
+		if flag_C:
+		
+		else:
+		```
+	- This is called flag debt. To avoid this, companies usually remove feature flags (along with the older versions of code) when they're no longer needed.
+
+### Common Interview Questions
+1. Your team has deployed a new search algorithm behind a feature flag. After enabling it for **10%** of users, search latency increases significantly. What would you do next? Why is this preferable to performing a full rollback?
+> 	I would dial back the feature flag to 0% and investigate the issue. This is preferable to performing a full rollback because that takes longer and may not actually be necessary, depending on the cause of the latency spike. I'd also look at the metrics segmented by users with the feature enabled versus disabled to confirm the latency increase is actually correlated with the new feature.
+2. If feature flags let you turn features on and off instantly, why do companies still need deployment strategies like canary or blue-green?
+> 	Feature flags and deployment strategies solve different problems. Feature flags control whether a feature is enabled after the application is running, while deployment strategies control how new software versions are introduced into production. If the new version can't start, crashes on launch, or has infrastructure-level issues, feature flags can't help because the application never reaches the point where it can evaluate them. That's why companies still use strategies like canary, rolling, and blue-green deployments alongside feature flags.
+
+| Concern                                       | Tool                |
+| --------------------------------------------- | ------------------- |
+| Is the application healthy?                   | Deployment strategy |
+| Should users see the feature?                 | Feature flag        |
+| Can the new system handle production traffic? | Shadow traffic      |
+| What if something goes wrong?                 | Rollback strategy   |
+
+## 15. Rollback Strategies
+
+- No matter how much testing you perform:
+	- Unit tests
+	- Integration tests
+	- Staging
+	- Canary
+	- Shadow traffic
+- Something can still go wrong in production.
+- A rollback strategy answers: "How do we return the system to a known-good state?"
+
+### Overview
+- A rollback is the process of restoring the previous working version after a failed deployment:
+	```
+	Version 1
+	
+	↓
+	
+	Deploy Version 2
+	
+	↓
+	
+	Problems Found
+	
+	↓
+	
+	Restore Version 1
+	```
+	- The primary goal is to minimize recovery time and customer impact.
+- A rollback is a **business decision**, it's not an automatic response to issues faced in production. For example:
+	- If error rates increased by 0.01% after a deployment, you probably wouldn't roll back.
+	- If checkout failures increased by 30% after a deployment, you almost certainly would roll back.
+- The decision to roll back ultimately depends on:
+	- Customer impact
+	- Business impact
+	- Severity
+	- Availability of a workaround
+
+### Common Rollback Strategies
+1. Traditional Rollback
+	```
+	Version 2
+	
+	↓
+	
+	Deploy Version 1
+	```
+	- Deploy the previous version.
+	- Simple. But it takes time.
+1. Rolling Rollback
+	```
+	New
+	
+	↓
+	
+	Old
+	
+	↓
+	
+	Old
+	
+	↓
+	
+	Old
+	```
+	- Replaces servers gradually, just like a rolling deployment.
+	- Useful for large fleets.
+	- Recovery is gradual.
+1. Blue-Green Rollback
+	```
+	Blue
+	
+	(Current)
+	
+	Green
+	
+	(New)
+	```
+	- No deployment required.
+	- Simply change the traffic routing from Green to Blue.
+	- This is one reason Blue-Green deployments are popular. Rollback often takes seconds, instead of minutes or hours.
+1. Feature Flag Rollback
+	```
+	Feature Enabled
+	
+	↓
+	
+	Feature Disabled
+	```
+	- If the deployment itself is unhealthy, but only one feature is problematic, this strategy allows you to disable the feature without a new deployment or rollback.
+	- Often leads to the fastest recovery.
+1. Canary Rollback
+	```
+	5%
+	
+	↓
+	
+	New Version
+	```
+	- If metrics worsen when the feature is introduced to 5% of production traffic, you can stop and rollback. The remaining 95% of traffic was never affected.
+	- This is how Canary Deployments reduce blast radius.
+
+### Rollback vs. Hot Fix
+- If a bug is discovered after a deployment, do you roll back or fix it immediately?
+	- It depends. A rollback is usually preferable when:
+		- Recovery is fast.
+		- Previous version is stable.
+		- Customer impact is significant.
+	- A hot fix may be better when:
+		- Rolling back would break another critical feature.
+		- The bug is isolated and easily fixed.
+		- The previous version is incompatible with recent data or schema changes.
+- The hardest rollback problem involves changes to a database schema:
+	```
+	Version 1
+	
+	↓
+	
+	Schema A
+	
+	↓
+	
+	Deploy
+	
+	↓
+	
+	Schema B
+	```
+	- When you try to rollback, Version 1 doesn't understand Schema B.
+	- This is why database changes require special care.
+
+### Backward-Compatible Migrations
+- Experienced teams often use **expand-and-contract** migrations.
+	- Instead of:
+		```
+		Remove Old Column
+		
+		↓
+		
+		Add New Column
+		```
+	- They do:
+		```
+		Add New Column
+		
+		↓
+		
+		Application Writes Both
+		
+		↓
+		
+		Migrate Data
+		
+		↓
+		
+		Switch Reads
+		
+		↓
+		
+		Remove Old Column
+		```
+	- The old column is gradually deprecated and removed after the new column is added.
+	- This allows a rollback to remain possible.
+
+### Common Examples
+- **Data Engineering Example:** Suppose you've deployed an ETL pipeline.
+	- After the deployment:
+		- Record counts drop.
+		- No processing errors.
+		- Dashboard metrics are incorrect.
+	- In this scenario, you usually wouldn't keep debugging in production. If business reporting is affected, you would:
+		- Restore the previous pipeline.
+		- Investigate offline.
+	- **Correctness is more important than experimenting in production.**
+- **Amazon Example:** Imagine the cache initialization fix.
+	- After the deployment:
+		- Error rate decreases.
+		- Latency doubles.
+	- Before rolling back you would ask:
+		- Is latency within our SLA?
+		- Is customer experience worse?
+		- Did we accidentally introduce blocking?
+		- Is the synchronization mechanism causing lock contention?
+	- The answer isn't automatically "rollback." It's **evaluate the business impact first**.
+- It's important to keep in mind that rollback **doesn't always equate to failure**. Senior engineers view rolling back as a natural part of a safe deployment process.
+- The easier it is to rollback, the more confident a team becomes at shipping frequently.
+- **The best rollback is the one you've already planned before deployment.**
+
+### Putting It All Together
+- Here's how all of these concepts fit together:
+	```
+	Develop Feature
+	
+	↓
+	
+	Deploy New Version
+	
+	↓
+	
+	Shadow Traffic
+	(Operational validation)
+	
+	↓
+	
+	Canary
+	(Limited customer exposure)
+	
+	↓
+	
+	Feature Flag
+	(Control who sees the feature)
+	
+	↓
+	
+	Monitor Metrics
+	
+	↓
+	
+	Healthy?
+	
+	├── Yes → Increase rollout
+	│
+	└── No
+	      │
+	      ├── Disable feature flag (feature issue)
+	      │
+	      ├── Stop canary rollout
+	      │
+	      ├── Switch Blue → Green
+	      │
+	      └── Roll back deployment
+	```
+	- Each technique reduces risk at a different stage.
+	- They compliment each other. They don't replace one another.
+
+| Goal                          | Technique                        |
+| ----------------------------- | -------------------------------- |
+| Validate operational behavior | Shadow traffic                   |
+| Limit customer exposure       | Canary deployment                |
+| Deploy without releasing      | Feature flags                    |
+| Replace infrastructure safely | Rolling / Blue-Green deployments |
+| Recover quickly               | Rollback strategies              |
+
+### Common Interview Questions
+1. Your team deployed a new version of an ETL pipeline.
+	- Ten minutes later:
+		- CPU is normal.
+		- Memory is normal.
+		- No exceptions are logged.
+		- **Executive dashboards show revenue has dropped by 40%**.
+		- Would you immediately roll back? Why or Why not?
+> 	A 40% revenue drop is severe enough that I'd immediately pause the rollout and begin investigating. I'd compare the new pipeline's outputs against the previous version, examine data quality metrics such as row counts and aggregates, and determine whether the discrepancy is caused by the deployment. If the evidence suggests the pipeline is producing incorrect business data, I'd roll back to restore accurate reporting while continuing the investigation offline.
+			- You don't rollback immediately. Instead you:
+				- Pause the rollout.
+				- Quickly investigate.
+				- Rollback if the deployment is responsible.
+2. If you can simply disable a feature flag, why would you ever need a rollback?
+> 	Feature flags only control whether specific functionality is enabled after the application is running. If the deployment itself has problems—such as startup failures, configuration issues, dependency incompatibilities, or memory leaks—a feature flag can't help because the application may never reach the point where it can evaluate the flag. In those cases, a deployment rollback is the appropriate recovery strategy.
