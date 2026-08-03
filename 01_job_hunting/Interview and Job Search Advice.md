@@ -12,6 +12,140 @@
 | System Design |             20% |
 | Python        |             15% |
 | Behavioral    |             10% |
+
+## Interview Breakdown
+
+### Round 1: Recruiter Screen (30-45 min)
+- This is typically non-technical in nature.
+- It's more behavioral in nature. As a career switcher, you'll likely be asked why you're switching and why you want to work there.
+- Typical Questions:
+	- Tell me about yourself.
+	- Why data engineering?
+	- Walk me through your recent projects.
+	- Why do you want to work here?
+	- Salary expectations
+	- Visa/work authorization
+	- Availability
+- For someone transitioning into data engineering, this round is largely about presenting a coherent narrative. You want to explain how your software engineering background complements the move into data engineering.
+
+### Round 2: SQL (45-60 min)
+- Arguably **the most important round**.
+- Topics Include:
+	- Joins
+		- INNER
+		- LEFT
+		- RIGHT
+		- FULL
+		- SELF
+	- Aggregations
+		- GROUP BY
+		- HAVING
+		- AVG
+		- SUM
+		- COUNT DISTINCT
+	- Window Functions
+		- ROW_NUMBER
+		- RANK
+		- DENSE_RANK
+		- LAG
+		- LEAD
+		- FIRST_VALUE
+	- Common Table Expressions (CTEs)
+	- Recursive CTEs (sometimes)
+	- Query Optimization
+		- Indexes
+		- Execution plans
+		- Partition pruning
+		- Predicate pushdown
+- Typical Interview Questions:
+	- Find the second highest salary.
+	- Running totals
+	- Top N customers
+	- Sessionization
+	- Rolling averages
+	- Duplicate detection
+- Many companies use problems similar to Medium-level SQL questions.
+
+### Round 3: Python (45-60 min)
+- Usually **less algorithm-heavy** than software engineering interviews.
+- They're interested in whether you can write **production-quality data-processing code**.
+- Topics:
+	- Dictionaries
+	- Lists
+	- Sets
+	- Tuples
+	- Comprehensions
+	- Generators
+	- Functions
+	- Exception handling
+- Data Engineering-Specific Topics:
+	- Parsing JSON
+	- CSV processing
+	- File handling
+	- Datetime
+	- Regex
+- Sometimes:
+	- Pandas
+	- PySpark
+	- Polars
+- Typical Questions:
+	- Parse a log file.
+	- Remove duplicates.
+	- Aggregate records.
+	- Read a CSV and compute statistics.
+	- Merge datasets.
+- Compared to software engineering interviews, LeetCode Hard questions are much less common.
+
+### Round 4: Data Modeling & System Design (60-90 min)
+- **Data Modeling**:
+	- Topics:
+		- Normalization
+		- Denormalization
+		- Star schema
+		- Snowflake schema
+		- Slowly changing dimensions
+		- Fact vs dimension tables
+		- Surrogate keys
+	- Typical Questions:
+		- Design a warehouse for:
+			- E-commerce
+			- Rideshare
+			- Banking
+			- Streaming service
+- **Data Engineering System Design**:
+	- Topics:
+		- Kafka
+		- Spark
+		- Airflow
+		- Snowflake
+		- BigQuery
+		- Databricks
+		- S3
+		- Partitioning
+		- Orchestration
+		- Monitoring
+		- Retries
+		- Idempotency
+	- Example Prompts:
+		- Design:
+			- An ETL pipeline
+			- A streaming analytics platform
+			- Clickstream processing
+			- Real-time fraud detection
+			- CDC pipeline
+			- Data lake architecture
+- **They're looking for trade-offs, not buzzwords**.
+
+### Round 5: Bahavioral (45-60 min)
+- Typical Questions:
+	- Tell me about a difficult project.
+	- Tell me about a disagreement.
+	- Tell me about a failure.
+	- Tell me about a time you improved a process.
+	- Tell me about a production incident.
+	- Tell me about mentoring someone.
+- Large tech companies prefer answers to formatted using the STAR method for beginner to mid-level roles. The HERO method is for senior-level or leadership roles.
+
 ## General Advice
 1. Interviewing isn’t about luck or memorizing scripted answers; it’s about skill.
 2. The people who most often get hired aren’t the smartest. They’re the ones who know **how to think like hiring managers.** They treat interviews as a **transaction** where they’re selling a solution to one of the company’s biggest issues.
