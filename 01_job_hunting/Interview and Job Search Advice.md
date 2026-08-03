@@ -4,6 +4,14 @@
 	3. Behavioral
 	4. Data Modeling
 	5. System Design
+
+| Topic         | Suggested focus |
+| ------------- | --------------: |
+| SQL           |             35% |
+| Data Modeling |             20% |
+| System Design |             20% |
+| Python        |             15% |
+| Behavioral    |             10% |
 ## General Advice
 1. Interviewing isn’t about luck or memorizing scripted answers; it’s about skill.
 2. The people who most often get hired aren’t the smartest. They’re the ones who know **how to think like hiring managers.** They treat interviews as a **transaction** where they’re selling a solution to one of the company’s biggest issues.
