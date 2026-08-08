@@ -1669,7 +1669,7 @@
 	- Hot keys
 	- Read-heavy workloads
 
-## Mock Interview
+## Mock Interview Questions
 
 1. You're designing the backend for an online ticketing platform.
 	- Requirements:
@@ -1690,3 +1690,736 @@
 		- Whether you'd use strong or eventual consistency for different operations.
 		- Any major tradeoffs you would consider.
 > 	For browsing concerts, I'd optimize for read performance by using DAX because concert metadata changes infrequently but receives very high read traffic. For ticket purchases, I'd use DynamoDB transactions with strong consistency to ensure inventory is never oversold. I'd store reservations in DynamoDB with a TTL so abandoned reservations expire automatically after 15 minutes. I'd use DynamoDB Streams to trigger downstream actions such as confirmation emails and analytics updates without tightly coupling the purchase API to those services. Customer support would use a GSI on `TicketID` for direct lookups. For executive reporting, I wouldn't build another GSI because the reports only run nightly; I'd instead export the data into an analytics platform such as S3 and Athena.
+
+# ElastiCache / Redis
+
+## Cache Hit Ratio
+
+### Design Scenario
+- You're building an e-commerce website. One product becomes extremely popular.
+- The application looks like this:
+	```
+	Customer
+	
+	↓
+	
+	API
+	
+	↓
+	
+	DynamoDB
+	
+	↓
+	
+	Return Product
+	```
+	- Suddenly, traffic spikes to 200,000 TPS for the same product.
+	- The product details typically don't change more than once a week.
+- **How would you solve this problem**?
+- Suppose we introduce a cache.
+- The first request does this:
+	```
+	Cache
+	
+	↓
+	
+	Miss
+	
+	↓
+	
+	Database
+	
+	↓
+	
+	Populate Cache
+	```
+- The next 100,000 requests do this:
+	```
+	Cache
+	
+	↓
+	
+	Hit
+	```
+- **Why is this dramatically faster than querying the database every time**?
+> 	Since the product details rarely change, I would place a cache in front of DynamoDB that could handle the repeated requests. Caches are optimized for fast and efficient reads, which would help reduce request latency compared to calling the database directly. Calling the database excessively for the same information, instead of using a cache, can lead to performance degradation and potential throttling.
+	- When and application queries DynamoDB directly, the request may involve:
+		- Network round trip.
+		- Request parsing.
+		- Authentication.
+		- Routing.
+		- Looking up the item.
+		- Returning the result.
+	- Even though DynamoDB is extremely fast, that's still a complete database request.
+	- When using Redis to fulfill the request instead of DynamoDB, the data is already sitting:
+		- In RAM.
+		- In a very simple key-value structure.
+		- Ready to return immediately.
+	- Very little work is required.
+	- That's why caches are measured in **microseconds**, while databases are often measured in **milliseconds**.
+- Suppose someone says: "RAM is expensive. Let's store the cache on disk instead." **Would that still be a cache? Or would we lose most of the benefit**?
+> 	Although RAM may be expensive, a disk-backed cache would still incur disk I/O, which is much slower than accessing data directly from memory. It may also introduce additional serialization/deserialization overhead, further increasing latency under heavy load.
+	- Even if the data didn't need to be serialized, you'd still need to pay the cost of waiting for the storage device. **Disk I/O is the heavier cost burden, not serialization/deserialization**.
+- **Why not just make the database faster instead of adding Redis**?
+> 	Because caching addresses a different problem. Even if the database is highly optimized, repeatedly executing the same read wastes resources. A cache avoids unnecessary database work by serving frequently accessed data directly from memory, reducing both latency and database load.
+- Why is Redis fast?
+> 	Because it stores data in memory using efficient data structures, eliminating disk I/O and reducing the amount of work required to satisfy each request. That results in extremely low-latency lookups while also reducing load on the primary database.
+
+### Performance Comparison
+- Querying DynamoDB:
+	```
+	Application
+	
+	↓
+	
+	Network
+	
+	↓
+	
+	Database
+	
+	↓
+	
+	Storage lookup
+	
+	↓
+	
+	Return result
+	```
+	- Lots of work.
+- Querying Redis:
+	```
+	Application
+	
+	↓
+	
+	Memory lookup
+	
+	↓
+	
+	Return result
+	```
+	- Much less work.
+- Querying an in-process cache:
+	```
+	Application
+	
+	↓
+	
+	Local memory
+	
+	↓
+	
+	Return result
+	```
+	- Even less work.
+- As we move the data closer to the application, we eliminate:
+	- Network hops
+	- Database work
+	- Storage access
+- Each step removes work from the request path.
+
+### Knowledge Check
+- Suppose you have a cache with a 95% cache hit ratio.
+- Out of 100,000 requests, how many reach the database?
+- Why is cache hit ratio one of the most important metrics for evaluating whether a cache is providing value?
+> 	5,000 requests are reaching the database. cache hit ratio is one of the most important cache metrics because it tells you how effective the cache is at protecting the underlying data store from repeated requests.
+	- Generally speaking, cache hit ratio is important because a higher ratio:
+		- Lowers latency. More requests are served from memory.
+		- Lowers database load.
+		- Lowers cost. Fewer database reads means:
+			- Less compute
+			- Less throughput consumption
+			- Lower infrastructure costs
+- If your cache hit ratio suddenly drops from 95% to 40%, what do you investigate?
+	- A strong engineer starts asking questions like:
+		- Did the TTL become too short?
+		- Are cache entries being invalidated too frequently?
+		- Has the workload changed?
+		- Are users requesting different data than before?
+		- Is the cache undersized and evicting useful entries?
+
+## Cache Invalidation
+
+> There are only two hard things in Computer Science: cache invalidation and naming things.
+
+### Design Scenario
+- Suppose our product page is cached.
+- Initially:
+	```
+	Database
+	
+	Nintendo Switch
+	
+	Price = $299
+	```
+- The cache contains:
+	```
+	Nintendo Switch
+	
+	Price = $299
+	```
+- Then someone updates the database.
+	```
+	Database
+	
+	Price = $249
+	```
+	- Unfortunately, the cached entry is now stale. The cache still contains: `Price = $299`.
+	- Customers continue seeing the outdated price.
+- **How would you prevent the cache from serving stale data? Can you think of one or more strategies**?
+- Imagine the cache server crashes. It loses every cached entry.
+- **What should the application do**?
+	- Return an error?
+	- Query the database?
+	- Something else?
+- Imagine 10,000 requests all arrive immediately after the cache is emptied.
+- Every request asks for: `Nintendo Switch`.
+- **What problem might that create? How could you reduce that problem**?
+> 	When the price is updated in the database, a signal should be sent to the cache informing it of the update. This would tell the cache to invalidate the entry and either repopulate the updated entry immediately or upon the next cache miss. If a cache server crashes, it should be repopulated in the background while the application queries the database. Once the cache is restored, the application should resume querying the cache. The first cache miss should call the database while all other requests are told to wait. Once the cache is populated, the other requests should query the cache.
+	- The invalidation signal being sent to the cache could come in the form of a DynamoDB stream.
+	- Conceptually:
+		```
+		Update Database
+		
+		↓
+		
+		Publish Event
+		
+		↓
+		
+		Invalidate Cache
+		
+		↓
+		
+		Refresh Now
+		
+		or
+		
+		Refresh on Next Read
+		```
+- Question 1: There are two methods used to repopulated invalidated cache entries:
+	- **Lazy Loading (Cache-Aside)**:
+		```
+		Invalidate
+		
+		↓
+		
+		Next Request
+		
+		↓
+		
+		Cache Miss
+		
+		↓
+		
+		Database
+		
+		↓
+		
+		Cache
+		```
+	- **Write-Through / Refresh**:
+		```
+		Database Updated
+		
+		↓
+		
+		Immediately Update Cache
+		```
+- Question 2:
+	- The application queries the **database** while the cache is repopulated because the database **acts as the source of truth**, not the cache.
+- Question 3:
+	- Without coordination:
+		```
+		10,000 requests
+		
+		↓
+		
+		10,000 cache misses
+		
+		↓
+		
+		10,000 database queries
+		```
+	- Better approach:
+		```
+		10,000 requests
+		
+		↓
+		
+		One request rebuilds cache
+		
+		↓
+		
+		9,999 wait
+		
+		↓
+		
+		Cache populated
+		
+		↓
+		
+		All receive cached value
+		```
+		- This is commonly called:
+			- Request coalescing
+			- Single-flight pattern
+			- Dogpile prevention
+	- Instead of telling other requests to wait for the cache to be populated, other systems sometimes use:
+		- Distributed locks
+		- Request deduplication
+		- Background refresh
+		- Stale-while-revalidate
+	- The important point is **preventing thousands of identical database queries**.
+- **What happens if the cache goes down**?
+> 	The application should gracefully fall back to the database. Performance may degrade temporarily, but correctness should not be affected because the database remains the source of truth.
+
+## Cache Eviction
+
+### Design Scenario
+- Suppose your cache has enough memory for 1,000 products.
+- But your application now has 10,000 products.
+- Eventually, the cache becomes full. 
+- Now a new product needs to be cached.
+- Which existing item should be removed?
+- **If you were designing the cache yourself, how would you decide which item to evict**?
+- Product A receives 100,000 requests per day.
+- Product B receives 1 request per year.
+- The cache is full. **Which product would you remove? Why**?
+- Now imagine Product A was really popular last Christmas, but hasn't been requested in the last 6 months.
+- Meanwhile, Product C has suddenly become very popular this week.
+- **Does your answer change? Why**?
+> 	I would design the cache to remove the least frequently used item. Evicting the least frequently used item makes sense in this case because a popular product may not be queried while it is out of stock, but could receive a massive amount of requests once it is restocked. Since Product B only receives 1 request/year, I would event it instead of Product A. Using an LFU cache should evict Product A if Product C suddenly becomes more popular than Product A. However, setting a reasonable TTL would ensure a dormant product is evicted after a reasonable amount of time.
+	- LRU would actually be more appropriate for the third scenario.
+	- Imagine Product A gets 5,000,000 requests/day on Christmas. 6 months latter, Product B receives 100,000 requests/day while Product A has been mostly dormant.
+	- An LFU cache would not evict Product A, an LRU cache would.
+- Cache Policy Tradeoffs:
+	- LFU
+		- Good when:
+			- Long-term popularity predicts future popularity.
+			- Frequently used items stay valuable.
+		- Examples:
+			- Popular products
+			- Frequently used configuration data
+	- LRU:
+		- Good when:
+			- Recent activity predicts future activity.
+		- Examples:
+			- User sessions
+			- Recently viewed products
+			- Trending content
+- Should I use LRU or LFU?
+> 	It depends on whether historical popularity or recent activity is a better predictor of future access. If frequently accessed items remain valuable over long periods, LFU may be a better fit. If access patterns change rapidly, LRU often adapts more quickly.
+
+### Knowledge Check
+- Imagine a news website.
+- Every hour:
+	- Hundreds of new articles are published.
+	- Yesterday's articles rapidly lose traffic.
+	- Breaking news changes throughout the day.
+- Would you choose an LFU or LRU cache? Why?
+> 	I would use an LRU cache because recent activity is a better predictor of future activity than long-term popularity in this case. Articles rapidly lose traffic after they're read, so holding on to the historically most popular article wouldn't provide any meaningful benefit.
+- Why doesn't Redis have one universally best eviction policy?
+> 	Because different applications exhibit different access patterns. Some workloads have long-term hot data, making LFU effective. Others change rapidly, making LRU a better predictor of future requests. The optimal eviction policy depends on the application's workload rather than the cache implementation.
+
+## Cache Write Strategies
+
+### Design Scenario
+- Suppose a customer updates their shipping address.
+- The application currently looks like this:
+	```
+	Application
+	
+	↓
+	
+	Database
+	
+	↓
+	
+	Success
+	```
+- Now we've added Redis.
+- The question becomes: When should Redis be updated?
+- Option A:
+	- The application writes to the database.
+	- Then immediately updates the cache.
+		```
+		Application
+		
+		↓
+		
+		Database
+		
+		↓
+		
+		Cache
+		```
+- Option B:
+	- The application writes to the cache.
+	- The cache immediately writes to the database.
+		```
+		Application
+		
+		↓
+		
+		Cache
+		
+		↓
+		
+		Database
+		```
+- Option C:
+	- The application writes to the cache.
+	- The cache waits. Later, the cache asynchronously writes to the database.
+		```
+		Application
+		
+		↓
+		
+		Cache
+		
+		↓
+		
+		(wait)
+		
+		↓
+		
+		Database
+		```
+- **What are the advantages and disadvantages of each approach**?
+- Suppose this is a banking application. **Which approach makes you the most comfortable? Why**?
+- Now suppose this is an analytics platform ingesting 5 million events/sec. **Would your answer change? Why**?
+> 	Option A ensures the cache is updated immediately after a successful database write and stays in sync with the database, but may end up writing a dormant item to the cache. Option B also ensures the cache and database stay in sync, but writes to the database take slightly longer. There is also a risk the cache could crash before writing to the database. Option C ensures the cache updates immediately, but further increases write latency to the database. For a banking application, I would prefer Option A because updates are written to the source of truth first, then immediately written to the cache to avoid inconsistencies. For an analytics platform ingesting data at a high rate, I would prefer Option C because it would buffer the amount of writes to the database.
+	- The application waits until **both** writes succeed. So yes, the **overall operation** takes longer than writing only to the database, but not because the cache delays the database—it waits for both systems to complete before acknowledging success.
+	- In **write-through**, the cache forwards the write immediately. That crash window is usually very small. The larger risk of losing data actually belongs to **Option C**.
+	- Write-behind (Option C) is popular for:
+		- Logging
+		- Analytics
+		- Metrics
+		- Telemetry
+
+### Summary
+- **Cache-Aside**:
+	```
+	Read:
+	
+	Cache
+	
+	↓
+	
+	Miss
+	
+	↓
+	
+	Database
+	
+	↓
+	
+	Cache
+	```
+	- Best when:
+		- Read-heavy
+		- Not every item is read
+- **Write-Through**:
+	```
+	Write Database immediately
+	
+	↓
+	
+	Update cache immediately
+	```
+	- Equivalently, write through the cache to the database immediately.
+	- Best when:
+		- Reads should immediately reflect writes.
+		- Correctness matters.
+- **Write-Behind**:
+	```
+	Write cache
+	
+	↓
+	
+	Return success
+	
+	↓
+	
+	Persist later
+	```
+	- Best when:
+		- Massive write throughput
+		- Eventual persistence acceptable
+	- **Not ideal when data loss is unacceptable**.
+
+### Knowledge Check
+- Suppose you're building a service that collects:
+	- CPU utilization
+	- Memory utilization
+	- Network throughput
+- From **100,000 servers every second**.
+- If one metric sample is occasionally lost, it's not a big deal because another arrives one second later.
+- **Which write strategy would you choose**?
+> 	I would choose the Write-Behind caching strategy because a small amount of data loss is acceptable and the buffering would lower the write throughput on the database. Cache-Aside and Write-Through would expose the database to the full write throughput of the service.
+	- **Cache-Aside** is primarily a **read strategy**. Writes usually go directly to the database, and the cache is invalidated or updated afterward.
+	- **Write-Through** is a **write strategy**, where every write synchronously reaches both the cache and the database.
+- **Why don't banks use write-behind caching**?
+> 	Because write-behind acknowledges the write before it has been durably stored in the database. If the cache fails before flushing its buffered writes, committed transactions could be lost. Banking systems prioritize durability and correctness over write throughput, so synchronous persistence is generally preferred.
+
+| Strategy      | Prioritizes                |
+| ------------- | -------------------------- |
+| Cache-Aside   | Efficient reads            |
+| Write-Through | Consistency and durability |
+| Write-Behind  | Maximum write throughput   |
+
+## Redis Data Structures
+
+### Design Scenario
+- **Scenario 1: User Profile**:
+	- You're storing:
+		```
+		User
+		
+		Name
+		
+		Email
+		
+		Phone
+		
+		Address
+		```
+		- Would you rather store it as:
+			- One giant JSON string.
+			- A structure that stores each field separately.
+		- **Why**?
+- **Scenario 2: Unique Visitors**:
+	- You need to answer: "How many unique users visited the homepage today?"
+	- If the same person refreshes the page 100 times, should they only be counted 1 time?
+	- **What kind of data structure would you choose**?
+- **Scenario 3: Gaming Leaderboard**:
+	- You need to display to the top 100 players, sorted by score.
+	- Players constantly earn points.
+	- The leaderboard is updated every few seconds.
+	- **What kind of data structure would you design**?
+- **Scenario 4: Shopping Cart**:
+	- A customer has:
+		```
+		Nintendo Switch
+		
+		2
+		
+		Controller
+		
+		1
+		
+		Mario Kart
+		
+		1
+		```
+		- Would you rather store:
+			- Four separate keys?
+			- One object?
+			- Something else?
+		- **Why**?
+> 	For Scenario 1, I'd rather store the user profile as a structure that stores each field separately. More often than not, a user's entire profile is not needed. Instead, certain fields, such as name, email, or phone, are needed. Storing the profile in a structure that stores each field separately would make retrieval faster. For Scenario 2, the user should only be counted once. To achieve this, I'd use a structure similar to a set, that only stores unique values. The only deciding factor would be what value to store. To prevent a user from being counted more than once if they refresh the page, session ID might be a good choice. For Scenario 3, I would design a cache with player ID as the partition key and score as the sort key. The data would be written to the cache and incrementally persisted to the data store in batches. For Scenario 4, I would store the shopping cart as a nested object. One attribute would be the customer ID and the second attribute would be an object mapping each item to its respective quantity. This would allow shopping carts to be queried by customer ID and have the items displayed using the nested object.
+	- Scenario 3 asks about a **cache** design, not a database design. The partition and sort key are valid choices, but don't relate to a cache.
+		- The most important operation is: Top 100 players
+			- That means we only care about:
+				- Fast score updates
+				- Automatic sorting
+				- Efficient ranking
+			- The Redis Sorted Set was built specifically to meet these three requirements.
+- **Why use a Hash instead of storing JSON**?
+> 	Because hashes allow individual fields to be read and updated efficiently without replacing the entire object. They're a natural fit for records composed of multiple related attributes.
+
+### Summary
+- Scenario 1 would use a **Redis Hash** to store the user profile.
+	- Conceptually:
+		```
+		User:123
+		
+		↓
+		
+		Name -> Calvin
+		Email -> calvin@email.com
+		Phone -> ...
+		Address -> ...
+		```
+- Scenario 2 would use a **Redis Set** to store unique visitors.
+	- Sets automatically prevent duplicates.
+	- Examples of values that could be used to uniquely identify users include:
+		- Session ID
+		- User ID
+		- Anonymous visitor cookie
+	- The correct identifier depends on the business definition of "unique."
+- Scenario 3 would use a **Redis Sorted Set** to store the leaderboard data.
+	- Conceptually:
+		```
+		PlayerA -> 9500
+		
+		PlayerB -> 9300
+		
+		PlayerC -> 9100
+		```
+		- Redis automatically keeps the entries ordered by score.
+- Scenario 4 would also use a **Redis Hash** to store the customer's shopping cart.
+	- Something like:
+		```
+		Cart:123
+		
+		Nintendo Switch -> 2
+		
+		Controller -> 1
+		
+		Mario Kart -> 1
+		```
+		- The advantage is that individual quantities can be updated without replacing the entire cart.
+		- The object isn't nested, but it still uniquely identifies shopping cart items and their respective quantities.
+
+| Workload            | Redis Structure | Why                              |
+| ------------------- | --------------- | -------------------------------- |
+| User profile        | **Hash**        | Many related fields              |
+| Shopping cart       | **Hash**        | Item → Quantity mapping          |
+| Unique visitors     | **Set**         | Automatically removes duplicates |
+| Leaderboard         | **Sorted Set**  | Maintains ordering by score      |
+| Simple cached value | **String**      | Fast key-value lookup            |
+
+### Knowledge Check
+- Suppose you're building a chat application.
+- Each user has:
+	- An online/offline status.
+	- A profile (name, avatar).
+	- A list of friends.
+	- A global leaderboard based on reputation points.
+- For each piece of data, tell me **which Redis data structure you'd choose**:
+	1. Online/offline status
+	2. User profile
+	3. Friend list
+	4. Reputation leaderboard
+> 	For an online/offline status, I'd use a Redis String because it offers fast, simple key-value lookup. For a user profile, I'd use a Redis Hash because it offers efficient key-value mapping. For a Friend list, I'd use a Redis Set if there was no sorting requirement or a Redis Sorted Set if there was a sorting requirement. For a reputation leaderboard, I'd use a Redis Sorted Set to maintain proper ordering.
+	- Redis String:
+		```
+		User:123:Status
+		
+		↓
+		
+		"Online" (or "Offline")
+		```
+- **Why not store everything as Strings**?
+> 	While everything could be serialized into a string, Redis data structures provide operations that are optimized for specific workloads. Using a Hash allows individual fields to be updated efficiently, a Set automatically enforces uniqueness, and a Sorted Set maintains ordering without requiring the application to sort the data itself.
+
+| Workload           | Redis Structure | Reason                  |
+| ------------------ | --------------- | ----------------------- |
+| Cache a value      | String          | Simple key-value lookup |
+| User profile       | Hash            | Many related fields     |
+| Shopping cart      | Hash            | Item → Quantity mapping |
+| Friend list        | Set             | Unique collection       |
+| Sorted friend list | Sorted Set      | Ordered collection      |
+| Unique visitors    | Set             | Prevent duplicates      |
+| Leaderboard        | Sorted Set      | Ordered by score        |
+
+## Pub / Sub
+
+### Design Scenario
+- You're building a chat application.
+- Alice sends: "Hello!"
+- Bob is currently online. The message should appear on Bob's screen almost instantly.
+- **Option A**:
+	- Bob's application repeatedly asks:
+		```
+		Any new messages?
+		
+		↓
+		
+		No
+		
+		↓
+		
+		Any new messages?
+		
+		↓
+		
+		No
+		
+		↓
+		
+		Any new messages?
+		
+		↓
+		
+		Yes
+		```
+		- At least once every second.
+- **Option B**:
+	- Instead, Alice's message is **published**.
+	- Bob's application is already **subscribed**.
+	- As soon as the message is published:
+		```
+		Alice
+		
+		↓
+		
+		Publish
+		
+		↓
+		
+		Bob immediately receives it
+		```
+	- **Which approach would you choose? Why**?
+		- Think about:
+			- Latency
+			- Network traffic
+			- Scalability
+- Now, suppose Bob is offline.
+- Alice sends 10 messages.
+- Bob reconnects five minutes later.
+- **Should Redis Pub/Sub automatically deliver those missed messages? Or is there a limitation here**?
+- Now, imagine you're building:
+	- A payment system
+	- An order processing system
+	- An inventory system
+- **Would Redis Pub/Sub be your first choice? Or would you prefer a more durable messaging system? Why**?
+> 	I would choose Option B because Bob's application doesn't need to keep asking if there are new messages. This saves network resources on both ends. It's also faster and more scalable. Instead of requesting messages once a second, Bob could receive Alice's messages in milliseconds. If Alice and Bob wanted to start a group chat, other members would simply need to subscribe to receive Alice's messages. If Bob goes offline, the messages should automatically be delivered because he is still subscribed. For an inventory system, Pub/Sub would be a good implementation for sending out inventory updates to multiple subscribes. For a payment and order processing system, Pub/Sub wouldn't be a good idea durability is a higher concern than quickly sending updates to multiple subscribers.
+	- Redis Pub / Sub is only designed for **live communication**. If Bob goes offline, he won't receive any messages Alice sent during that time period. The messages are not stored or persisted by Redis.
+	- If you needed **guaranteed delivery**, you'd typically choose something that persists messages until consumers process them, such as:
+		- A message queue
+		- An event streaming platform
+		- **Redis Streams** (not Redis Pub / Sub)
+	- **Pub / Sub is ephemeral**. Subscribers only receive messages while they're actively connected.
+	- Durability is a higher concern for Payment and Order Processing. For payments:
+		- You don't want to lose a message because a consumer briefly disconnected.
+		- You need **acknowledgments, retries, and persistence**.
+		- Pub/Sub intentionally doesn't provide those guarantees.
+- Why not use Redis Pub/Sub for order processing?
+> 	Because Redis Pub/Sub is designed for real-time message distribution, not guaranteed delivery. If a subscriber is offline when a message is published, the message is lost. Order processing requires durability, retries, and reliable delivery, so I'd choose a durable messaging system instead.
+
+### Summary
+| Redis Pub/Sub          | Durable Messaging            |
+| ---------------------- | ---------------------------- |
+| Very low latency       | Slightly higher latency      |
+| No message persistence | Messages are persisted       |
+| No replay              | Consumers can catch up       |
+| Great for live events  | Great for critical workflows |
+Always ask: **What guarantees does the business require**?
+
+## Mock Interview Questions
+
+1. You're designing the backend for a large online multiplayer game.
+	- Requirements:
+		- Player profiles are read constantly but change infrequently.
+		- A live leaderboard displays the top 1,000 players.
+		- Friends receive an instant notification when someone comes online.
+		- Millions of gameplay events are collected every minute for analytics.
+		- Players can resume an unfinished match within 30 minutes if they disconnect.
+		- Match results affect player rankings and must never be lost.
+	- **Walk me through your design**.
+	- Specifically discuss:
+		- Where you would use Redis.
+		- Which Redis data structures you would choose.
+		- Whether you'd use Pub/Sub.
+		- Which write strategy fits the analytics pipeline.
+		- Which operations should bypass Redis entirely.
+		- Which components require durability versus speed.
+		- Any tradeoffs you would consider.
+> 	I'd cache player profiles in Redis because they're read frequently but updated infrequently, storing them as Redis Hashes. I'd use a Redis Sorted Set for the leaderboard because it efficiently maintains player rankings. I'd use Pub/Sub for online presence notifications because they're real-time but don't require durable delivery. Temporary match state would be stored in Redis with a 30-minute TTL so players can reconnect without leaving stale state indefinitely. For analytics events, I'd use a write-behind strategy to buffer the high volume of writes before persisting them. For match results, I'd bypass write-behind and use a write-through or direct database write because rankings and rewards require durable storage.
+	- Profiles should be cached using a **Redis Hash** rather than a string because profiles naturally contain multiple fields.
+	- If someone is offline, missing an "online" notification is inconsequential because another update will eventually arrive.
+	- Temporary match state should be stored in Redis with a TTL of 30 minutes.

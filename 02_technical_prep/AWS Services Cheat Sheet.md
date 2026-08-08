@@ -180,7 +180,7 @@
 | EBS     | EC2 block storage, databases           |
 | EFS     | Shared filesystem across EC2 instances |
 
-### Top 10 Interview Takeaways
+### Top Interview Takeaways
 1. **Always start with the workload.**
     - How is the data accessed?
     - How often?
@@ -400,7 +400,7 @@
 - **Decision Rule**
 > 	Cache data that is read often and changes infrequently.
 
-### 10 Interview Rules
+### Top Interview Takeaways
 1. **Design arount access patterns**. Not around the schema.
 2. Choose partition keys that distribute **traffic**, not just data.
 3. High cardinality helps. **Even traffic distribution matters more**.
@@ -411,3 +411,184 @@
 8. TTL automates the lifecycle of temporary data. It is **best effort**, not instantaneous.
 9. Use Streams to build event-driven architectures. Don't tightly couple your application to downstream services.
 10. **Think in tradeoffs**. There is almost never a universally "correct" AWS service or feature.
+
+## ElastiCache / Redis
+
+### Overview
+- Redis is an **in-memory data store** optimized for:
+	- Extremely low latency
+	- High throughput
+	- Frequently accessed data
+- Redis is **not** the source of truth. It's an optimization layer.
+- Typical use cases:
+	- Application caching
+	- Session storage
+	- Shopping carts
+	- Leaderboards
+	- Rate limiting
+	- Pub/Sub
+- A cache is most valuable when:
+	- Data is read frequently.
+	- Data changes infrequently.
+	- Database load is high.
+	- Low latency is important.
+- Good examples:
+	- Product catalogs
+	- User sessions
+	- Configuration data
+	- Feature flags
+- Poor examples:
+	- Rapidly changing financial balances
+	- Frequently updated inventory (depending on consistency requirements)
+
+### Cache Hit Ratio
+- A cache hit ratio measures the percentage of requests served directly from the cache.
+- High hit ratio:
+	- Lower latency
+	- Lower database load
+	- Lower cost
+- Low hit ratio:
+	- More database reads
+	- Less benefit from caching
+	- May indicate a design or configuration issue
+- **Decision Rule**
+> 	A cache is only valuable if it avoids a significant amount of work for the underlying data store.
+
+### Cache Invalidation
+- **Cache Invalidation**:
+	- Keep cached data synchronized with the source of truth.
+	- Common strategies:
+		- Cache-aside (lazy loading)
+		- Write-through / proactive updates
+		- Event-driven invalidation
+- **Common Strategies**:
+	- Event-driven invalidation
+	- Cache-aside (lazy loading)
+	- Proactive refresh
+	- Remember: The cache should never become the source of truth.
+- **Cache Miss**:
+	- When the cache doesn't contain the requested data:
+		1. Query the database.
+		2. Return the result.
+		3. Store it in the cache.
+- **Cache Stampede**:
+	- Occurs when many requests miss the cache simultaneously.
+	- Mitigation strategies:
+		- Request coalescing (single-flight)
+		- Distributed locks
+		- Background refresh
+		- Stale-while-revalidate
+
+### Cache Eviction
+- **Least Recently Used (LRU)**
+	- Use when:
+		- Recent access predicts future access.
+		- Trends change quickly.
+	- Examples:
+		- News articles
+		- User sessions
+		- Recently viewed items
+- **Least Frequently Used (LFU)**
+	- Use when:
+		- Long-term popularity predicts future access.
+		- Frequently used items remain valuable.
+	- Examples:
+		- Product catalogs
+		- Configuration data
+		- Reference data
+- **Decision Rule**
+> 	Choose the eviction policy that best matches how your application's access patterns evolve over time.
+
+### Cache Write Strategies
+- **Cache-Aside**:
+	```
+	Read
+	
+	↓
+	
+	Cache
+	
+	↓
+	
+	Miss
+	
+	↓
+	
+	Database
+	
+	↓
+	
+	Populate Cache
+	```
+	- Best for **read-heavy** applications.
+- **Write-Through**:
+	```
+	Application
+	
+	↓
+	
+	Cache
+	
+	↓ (immediately)
+	
+	Database
+	```
+	- Another common implementation is writing to database first, then immediately updating the cache.
+	- Best when consistency matters.
+- **Write-Behind**:
+	```
+	Application
+	
+	↓
+	
+	Cache
+	
+	↓
+	
+	Return Success
+	
+	↓
+	
+	Database Later
+	```
+	- Best when **throughput** matters more than immediate durability.
+	- Examples:
+		- Analytics
+		- Metrics
+		- Logging
+	- Avoid for:
+		- Banking
+		- Payments
+		- Orders
+
+### Redis Data Structures
+| Data Structure | Best Use Case                 |
+| -------------- | ----------------------------- |
+| String         | Cached values, status         |
+| Hash           | User profiles, shopping carts |
+| Set            | Unique visitors, friend lists |
+| Sorted Set     | Leaderboards, rankings        |
+
+### Pub / Sub
+- Messages are **not durable**. If a subscriber is offline, it misses the message.
+- Good for:
+	- Live chat
+	- Notifications
+	- Live dashboards
+	- Real-time updates
+- Not good for:
+	- Payments
+	- Orders
+	- Anything requiring guaranteed delivery
+
+### Top Interview Takeaways
+1. Redis is an **optimization layer**. Not the source of truth.
+2. Only cache data that is **read frequently**.
+3. Always have a cache invalidation strategy.
+4. Measure cache hit ratio. It's one of the most important cache metrics.
+5. Prevent cache stampedes. One database request should rebuild the cache.
+6. Choose the eviction policy based on **access patterns**.
+7. Write-through prioritizes correctness. Write-behind prioritizes throughput.
+8. Choose Redis data structures based on **operations**, not familiarity.
+9. Pub/Sub is fast but **not durable**.
+10. Always ask: Is the complexity of caching justified by the workload? **Sometimes, the answer is no**.
