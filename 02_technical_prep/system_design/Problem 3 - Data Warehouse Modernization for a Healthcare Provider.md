@@ -445,7 +445,7 @@ Your task is to design and prototype a cloud-based data warehouse solution lever
 
 # Solution
 
-![](photos/_solution_3_architecture_diagram.png)
+![](/photos/_solution_3_architecture_diagram.png)
 
 ## Separate Batch and Near-Real-Time Ingestion
 

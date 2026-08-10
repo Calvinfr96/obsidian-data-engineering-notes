@@ -81,7 +81,7 @@ To remain competitive and data-driven, XYZ Retail aims to modernize its data inf
 
 # Solution
 
-![](photos/_solution_1_architecture_diagram.png)
+![](/photos/_solution_1_architecture_diagram.png)
 
 ## Data Ingestion Layer
 

@@ -95,7 +95,7 @@ Currently, the fraud detection process relies on hourly batch jobs that analyze 
 
 # Solution
 
-![](photos/_solution_2_architecture_diagram.png)
+![](/photos/_solution_2_architecture_diagram.png)
 
 ## Proposed Architecture
 
