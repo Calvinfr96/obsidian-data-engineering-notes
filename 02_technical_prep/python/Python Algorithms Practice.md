@@ -945,6 +945,136 @@
 			
 			return limit_violators
 		```
+1. **High-Value Users (Practice Problem)**:
+	- **Approach**:
+		- A mapping of users to total purchase amount needs to be maintained. A dictionary will be used to maintain this mapping. As we iterate through the customers dataset, customers will be added to the dictionary with an initial total of $0. As we iterate through the events dataset, totals for users in the dictionary will be incremented by the amount of purchase events. When a customer's total exceeds $100, they will be added to another of users whose totals exceed $100. After iterating through the events dataset, the final dictionary of high-value users will be returned.
+	- **Data Structures**:
+		- Dictionary 1: Unique customers to transaction totals.
+		- Dictionary 2: Unique high-value customers to transaction totals.
+	- **Complexity**:
+		- Time: O(a + b), where 'a' is the number of customers and 'b' is the number of transactions.
+		- Space: O(a).
+	- **Solution**:
+		```python
+		def high_value_users(customers, events):
+			if not customers:
+				return dict()
+			
+			user_records = dict()
+			high_value_users = dict()
+			
+			for customer in customers:
+				user_records[customer[0]] = 0
+			
+			for event in events:
+				user_id = event[0]
+				event_type = event[1]
+				amount = event[2]
+				
+				if event_type != purchase:
+					continue
+				
+				if user_id not in user_records:
+					continue
+				
+				user_records[user_id] += amount
+				current_user_total = user_records[user_id]
+				
+				if current_user_total > 100:
+					high_value_users[user_id] = current_user_total
+			
+			return high_value_users
+		```
+		- The key idea is to invalidate events using `continue` **before** doing any work. This makes the actual event-handling logic much simpler.
+		- `amount` only needs to be incremented in `user_records`, then added to `high_value_users` if the `current_user_total > 100`. You don't need to increment `amount` in `high_value_users` separately.
+1. **Two-Level Aggregation (Practice Problem)**:
+	- **Approach**:
+		- As we iterate through transactions, we need to keep track of a unique user's total daily transaction amount. To achieve this, I would use a composite key of (user_id, date) and a value of transaction_total. One dictionary will store user transaction totals and another dictionary will act as the leaderboard, displaying the user with the highest daily total. The daily maximum can be determined in two passes. In the first pass, user transaction totals are calculated. In the second pass, the user with the highest total for each day is calculated.
+	- **Data Structures**:
+		- Dictionary 1: Daily user transaction totals.
+		- Dictionary 2: Daily highest user transaction total.
+	- **Complexity**:
+		- Time: O(n) where n is the number of transactions.
+		- Space: O(m) where m is the number of unique user-day combinations.
+	- **Solution**:
+		```python
+		from datetime import datetime
+		
+		def daily_transaction_leaderboard(transactions):
+			if not transactions:
+				return dict()
+			
+			user_records = dict()
+			user_leaderboard = dict()
+			
+			for transaction in transactions:
+				user_id = transaction[0]
+				date = transaction[1]
+				amount = transaction[2]
+				
+				if (user_id, date) not in user_records:
+					user_records[(user_id, date)] = amount
+				else:
+					user_records[(user_id, date)] += amount
+				
+				user_daily_total = user_records[(user_id, date)]
+				
+				if date not in user_leaderboard:
+					user_leaderboard[date] = (user_id, user_daily_total)
+				else:
+					current_leader_id, current_leader_amount = user_leaderboard[date]
+					
+					if user_daily_total > current_leader_amount:
+						user_leaderboard[date] = (user_id, user_daily_total)
+			
+			return user_leaderboard
+		```
+		- This can be done efficiently in two passes, but the solution above shows how to do it in one by decomposing the tuple value of `user_leaderboard` in order to compare the current highest total against the potential highest total. Even though `current_leader_id` is not needed, deconstructing the tuple this way is standard Python syntax. You could also use `current_leader_amount = user_leaderboard[date][1]`.
+1. **Deduplication With Latest Record (Practice Problem)**:
+	- **Approach**:
+		- For the first pass through records, we want to keep track of a transaction's most recent version. This can be accomplished by maintaining a dictionary maps a transaction_id to its record. When a transaction_id is new, it is added to the dictionary. When a duplicate transaction arrives, its timestamp is compared against the recorded transaction and the recorded transaction is updated in the dictionary if needed. Once transactions are deduplicated, a second dictionary can map users to transaction totals by totaling all unique transactions for a user, regardless of time. This would need to be done in two passes, since records need to be properly deduplicated (keeping the latest record) before calculating totals.
+	- **Data Structures**:
+		- Dictionary 1: Maps the transaction ID to the **latest version** of a transaction, based on timestamp.
+		- Dictionary 2: Maps the user ID to the transaction total, based on the **latest version** of transactions.
+	- **Complexity**:
+		- Time: O(n) where n is the number of records.
+		- Space: O(m) where m is the number of unique users. 
+	- **Solution**:
+		```python
+		from datetime import datetime
+		
+		def deduplicate_and_total(records):
+			if not records:
+				return dict()
+			
+			latest_records = dict()
+			user_totals = dict()
+			
+			for txn_id, user_id, amount, timestamp in records:
+				# Parse the timestamp into a datetime object
+				txn_time = datetime.strptime(timestamp, "%H:%M")
+				
+				# Check if this transaction is the latest version of the transaction ID
+				if txn_id not in latest_records:
+					latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
+					user_totals[user_id] = user_totals.get(user_id, 0) + amount # Transaction ID is not tied to user ID
+				else:
+					_, existing_user_id, existing_amount, existing_time = latest_records[txn_id]
+					if txn_time > existing_time: # Only update the transaction if it occurred later 
+						if existing_user_id == user_id:
+							user_totals[user_id] = user_totals.get(user_id, 0) - existing_amount + amount
+						else:
+							user_totals[existing_user_id] = user_totals.get(existing_user_id, 0) - existing_amount
+							user_totals[user_id] = user_totals.get(user_id, 0) + amount
+						latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
+			
+			return user_totals
+		```
+		- The problem can be solved in one pass, but involves carefully updating user totals when a transaction ID is updated:
+			- A transaction record is only updated when the current transaction **occurs after** the currently recorded transaction.
+			- If user IDs match between the two transaction records, subtract the currently recorded transaction amount and add the current transaction amount to the current total.
+			- If user IDs differ between the two transaction records, subtract the currently recorded transaction amount from the currently recorded user's total. Then add the current amount to the current user's total.
+			- Finally, update the transaction in `latest records`.
 
 ## Heaps / Priority Queues
 
@@ -1169,12 +1299,40 @@
 Note taking for practice problems. Only problems that pose a significant challenge or introduce a new algorithm will be recorded above.
 
 1. **Approach**:
-	- 
+	- For the first pass through records, we want to keep track of a transaction's most recent version. This can be accomplished by maintaining a dictionary maps a transaction_id to its record. When a transaction_id is new, it is added to the dictionary. When a duplicate transaction arrives, its timestamp is compared against the recorded transaction and the recorded transaction is updated in the dictionary if needed. Once transactions are deduplicated, a second dictionary can map users to transaction totals by totaling all unique transactions for a user, regardless of time. This would need to be done in two passes, since records need to be properly deduplicated (keeping the latest record) before calculating totals.
 2. **Data Structures**:
 	- 
 3. **Complexity**:
-	- 
+	- Time: O(n) where n is the number of records.
+	- Space: O(m) where m is the number of unique users. 
 4. **Solution**:
 	```python
+	from datetime import datetime
 	
+	def deduplicate_and_total(records):
+		if not records:
+			return dict()
+	
+	    latest_records = dict()
+	    user_totals = dict()
+	
+	    for txn_id, user_id, amount, timestamp in records:
+	        # Parse the timestamp into a datetime object
+	        txn_time = datetime.strptime(timestamp, "%H:%M")
+	
+	        # Check if this transaction is the latest version of the transaction ID
+	        if txn_id not in latest_records:
+	            latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
+	            user_totals[user_id] = user_totals.get(user_id, 0) + amount
+	        else:
+	            _, existing_user_id, existing_amount, existing_time = latest_records[txn_id]
+	            if txn_time > existing_time: # Only update the transaction if it occurred later 
+	                if existing_user_id == user_id:
+	                    user_totals[user_id] = user_totals.get(user_id, 0) - existing_amount + amount
+	                else:
+	                    user_totals[existing_user_id] = user_totals.get(existing_user_id, 0) - existing_amount
+	                    user_totals[user_id] = user_totals.get(user_id, 0) + amount
+	                latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
+	  
+	    return user_totals
 	```
