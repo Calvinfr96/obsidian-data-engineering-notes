@@ -945,7 +945,32 @@
 			
 			return limit_violators
 		```
-1. **High-Value Users (Practice Problem)**:
+1. **High-Value Users (Practice Problem)**: You have two datasets:
+	- Example:
+		```python
+		customers = [
+		    ("user1", "Alice"),
+		    ("user2", "Bob"),
+		    ("user3", "Charlie"),
+		]
+		
+		events = [
+		    ("user1", "purchase", 100),
+		    ("user1", "login", 0),
+		    ("user2", "purchase", 50),
+		    ("user1", "purchase", 75),
+		    ("user4", "purchase", 200),
+		    ("user2", "login", 0),
+		]
+		```
+	- Each event is: `(user_id, event_type, amount)`.
+	- Return the users whose **total purchase amount is greater than $100**, along with their total.
+	- Expected Result:
+		```python
+		{
+		    "user1": 175
+		}
+		```
 	- **Approach**:
 		- A mapping of users to total purchase amount needs to be maintained. A dictionary will be used to maintain this mapping. As we iterate through the customers dataset, customers will be added to the dictionary with an initial total of $0. As we iterate through the events dataset, totals for users in the dictionary will be incremented by the amount of purchase events. When a customer's total exceeds $100, they will be added to another of users whose totals exceed $100. After iterating through the events dataset, the final dictionary of high-value users will be returned.
 	- **Data Structures**:
@@ -987,7 +1012,27 @@
 		```
 		- The key idea is to invalidate events using `continue` **before** doing any work. This makes the actual event-handling logic much simpler.
 		- `amount` only needs to be incremented in `user_records`, then added to `high_value_users` if the `current_user_total > 100`. You don't need to increment `amount` in `high_value_users` separately.
-1. **Two-Level Aggregation (Practice Problem)**:
+2. **Two-Level Aggregation (Practice Problem)**: You now receive a list of transactions:
+	- Example:
+		```python
+		transactions = [
+		    ("user1", "2026-08-15", 100),
+		    ("user1", "2026-08-15", 75),
+		    ("user2", "2026-08-15", 50),
+		    ("user1", "2026-08-16", 200),
+		    ("user2", "2026-08-16", 25),
+		    ("user3", "2026-08-16", 300),
+		    ("user2", "2026-08-16", 100),
+		]
+		```
+	- For each day, which user spent the most money, and how much did they spend?
+	- Expected Result:
+		```python
+		{
+		    "2026-08-15": ("user1", 175),
+		    "2026-08-16": ("user3", 300)
+		}
+		```
 	- **Approach**:
 		- As we iterate through transactions, we need to keep track of a unique user's total daily transaction amount. To achieve this, I would use a composite key of (user_id, date) and a value of transaction_total. One dictionary will store user transaction totals and another dictionary will act as the leaderboard, displaying the user with the highest daily total. The daily maximum can be determined in two passes. In the first pass, user transaction totals are calculated. In the second pass, the user with the highest total for each day is calculated.
 	- **Data Structures**:
@@ -1030,7 +1075,26 @@
 			return user_leaderboard
 		```
 		- This can be done efficiently in two passes, but the solution above shows how to do it in one by decomposing the tuple value of `user_leaderboard` in order to compare the current highest total against the potential highest total. Even though `current_leader_id` is not needed, deconstructing the tuple this way is standard Python syntax. You could also use `current_leader_amount = user_leaderboard[date][1]`.
-1. **Deduplication With Latest Record (Practice Problem)**:
+3. **Deduplication With Latest Record (Practice Problem)**: You receive records from an event stream:
+	- Example:
+		```python
+		records = [
+		    ("txn1", "user1", 100, "10:00"),
+		    ("txn2", "user2", 50, "10:01"),
+		    ("txn1", "user1", 125, "10:05"),
+		    ("txn3", "user1", 75, "10:06"),
+		    ("txn2", "user2", 60, "10:03"),
+		]
+		```
+	- Each record is: `(transaction_id, user_id, amount, timestamp)`. Records may be **duplicates or updates of the same transaction**.
+	- For each `transaction_id`, we want to keep **only the latest record**.
+	- Expected Result:
+		```python
+		{
+			"user1": 200,
+			"user2": 60
+		}
+		```
 	- **Approach**:
 		- For the first pass through records, we want to keep track of a transaction's most recent version. This can be accomplished by maintaining a dictionary maps a transaction_id to its record. When a transaction_id is new, it is added to the dictionary. When a duplicate transaction arrives, its timestamp is compared against the recorded transaction and the recorded transaction is updated in the dictionary if needed. Once transactions are deduplicated, a second dictionary can map users to transaction totals by totaling all unique transactions for a user, regardless of time. This would need to be done in two passes, since records need to be properly deduplicated (keeping the latest record) before calculating totals.
 	- **Data Structures**:
