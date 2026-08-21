@@ -1139,8 +1139,85 @@
 			- If user IDs match between the two transaction records, subtract the currently recorded transaction amount and add the current transaction amount to the current total.
 			- If user IDs differ between the two transaction records, subtract the currently recorded transaction amount from the currently recorded user's total. Then add the current amount to the current user's total.
 			- Finally, update the transaction in `latest records`.
+1. **CDC Aggregation (Practice Problem)**: Imagine you're processing a simplified **Change Data Capture (CDC)** stream for customer accounts.
+	- Each record is: `(account_id, user_id, balance, timestamp, operation)`. The `operation` is either:
+		- `"upsert"` — this record represents the current state of the account
+		- `"delete"` — this account has been deleted
+	- Example:
+		```python
+		records = [
+		    ("acct1", "user1", 100, "10:00", "upsert"),
+		    ("acct2", "user1", 200, "10:01", "upsert"),
+		    ("acct3", "user2", 500, "10:02", "upsert"),
+		    ("acct1", "user1", 150, "10:05", "upsert"),
+		    ("acct2", "user1", 200, "10:06", "delete"),
+		    ("acct3", "user2", 600, "10:07", "upsert"),
+		]
+		```
+	- We want to maintain the **current total account balance for each user**:
+		- Records can arrive out of order.
+		- A later record for an account supersedes an earlier record.
+		- A delete removes the account's contribution. This means the balance in the account record should be updated to zero. The account should not actually be deleted.
+		- A delete can be followed by a later upsert, which recreates the account.
+		- A record with an older timestamp must be ignored.
+		- If timestamps are equal, the later record in the input wins.
+		- Don't sort.
+		- Aim for O(n) time.
+	- Expected Rsult:
+		```python
+		{
+		    "user1": 150,
+		    "user2": 600
+		}
+		```
+	- **Approach**:
+		- As we iterate through the list of records, we need to maintain a mapping of account ID to a tuple containing user ID, event time, and current balance. When an upset record is found for an account, its current balance is updated accordingly. When a delete record is found for an account, its current balance is reduced to zero. An account's record in the dictionary will only be updated if the event time for the current record is greater than or equal to the recorded event time. Once the account records have been finalized, the dictionary can be used to create another dictionary that maps a user to their total balance across all accounts.
+	- **Data Structures**:
+		- Dictionary 1: Mapping of account ID to account record. The account record consists of user ID, event time, and current balance.
+		- Dictionary 2: Mapping of user ID to total balance across all accounts.
+	- **Complexity**:
+		- Time: O(n + a) where n is the number of records and a is the number of accounts.
+			- Since n >= a, it can be simplified to O(n).
+		- Space: O(a + u), where u is the number of users.
+	- **Solution**:
+		```python
+		from datetime import datetime
+		
+		def account_cdc_aggregation(records):
+		    if not records:
+		        return dict()
+		
+		    account_records = dict()
+		    user_records = dict()
+		
+		    for account_id, user_id, balance, event_time, event_type in records:
+		        timestamp = datetime.strptime(event_time, "%H:%M")
+		
+		        if (
+		            account_id not in account_records
+		            or timestamp >= account_records[account_id][1]
+		        ):
+		            if event_type == "delete":
+		                balance = 0
+		
+		            account_records[account_id] = (
+		                user_id,
+		                timestamp,
+		                balance
+		            )
+		
+		    for account_id, (user_id, _, balance) in account_records.items():
+		        if user_id not in user_records:
+		            user_records[user_id] = balance
+		        else:
+		            user_records[user_id] += balance
+		
+		    return user_records
+		```
+		- The first if statement in the first for loop is somewhat complicated because it needs to account for a `delete` operation being the first record for a given account. In this case, the balance should be zero.
+			- If we only checked for `account_id` in the if statement, an account with an initial `delete` record may not be added to the dictionary correctly. It would be added with the record balance, not zero.
 
-## Heaps / Priority Queues
+## Heaps / Top-K
 
 1. **Top K Frequent Events**: You receive application events:
 	- Example:
@@ -1190,6 +1267,150 @@
 			- Processing Heap: O(m log(k))
 			- Time: O(n + m log(k))
 			- Space: O(m + k)
+
+## Stacks / Queues
+
+1. **Processing Nested Data**: You're processing events from a data pipeline. Each event contains a sequence of opening and closing markers representing nested transformations:
+	- Example:
+		```python
+		events = [
+		    "extract",
+		    "transform",
+		    "transform_end",
+		    "extract_end"
+		]
+		```
+	- A transformation can contain another transformation, so events must close in the **reverse order** in which they were opened.
+		- A nested transformation must be closed before its parent transformation can be closed.
+		- For example `[()]` is valid, but `[(])` is not valid.
+	- Event Types:
+		```
+		extract        → extract_end
+		transform      → transform_end
+		load           → load_end
+		validate       → validate_end
+		```
+	- Return `True` if the events represent a valid nesting structure, and `False` otherwise.
+	- Expected Result: `True`.
+	- **Approach**:
+		- You can use a list to maintain a record of opened operations. When a closing operation is encountered, it must match the last element in the list of opened operations. If the events match, that element is removed from the list, otherwise, you return `False`. If you can iterate through the list of events without returning `False` and the list of opened operations is empty, you would return `True`.
+		- You also need a dictionary to map a closing event to its corresponding opening event.
+	- **Data Structures**:
+		- List: Maintain an **ordered** collection of opening events. When a closing event is encountered, it must match the last element of the list.
+		- Dictionary: Maps closing events to opening events.
+	- **Complexity**:
+		- Time: O(n) where n is the number of events.
+		- Space: O(n) in the worst case, if every event is an opening event.
+	- Solution:
+		```python
+		def validate_pipeline(events):
+		    if not events:
+		        return True
+		    
+		    closing_to_opening = {
+		        "extract_end": "extract",
+		        "transform_end": "transform",
+		        "load_end": "load",
+		        "validate_end": "validate"
+		    }
+		    opening_events = set(closing_to_opening.values())
+		    opened_events = list()
+		
+		    for event in events:
+		        if event in opening_events:
+		            opened_events.append(event)
+		        else:
+		            if not opened_events:
+		                return False
+		            
+		            opening_event = opened_events.pop()
+		
+		            if opening_event != closing_to_opening[event]:
+		                return False
+		
+		    if not opened_events:
+		        return True
+		    else:
+		        return False
+		
+		```
+1. **Pipeline Task Scheduling**: Suppose a data pipeline receives jobs that need to be processed in the order they arrive.
+	- Each job consists of: `(job_id, processing_time)`.
+	- Example:
+		```python
+		jobs = [
+		    ("job1", 5),
+		    ("job2", 3),
+		    ("job3", 7),
+		    ("job4", 2)
+		]
+		```
+	- Each event consists of: `(event_type, job_id, processing_time)`.
+	- Example:
+		```python
+		events = [
+		    ("add", "job1", 5),
+		    ("add", "job2", 3),
+		    ("complete", "job1", 5),
+		    ("add", "job3", 7),
+		    ("complete", "job2", 3),
+		    ("add", "job4", 2),
+		]
+		```
+	- The pipeline has a **single worker**, so only one job can be processed at a time.
+	- Some jobs may be added to the queue **while processing is occurring**. The input is a chronological sequence of events.
+	- At any point:
+		- `"add"` adds a job to the back of the queue.
+		- `"complete"` means the currently running job has finished.
+		- When the worker becomes available, it takes the job at the **front of the queue**.
+		- If the queue is empty when the worker becomes available, the worker remains idle until another job arrives.
+	- Write a function that returns the order in which jobs are processed.
+	- Expected Result:
+		```python
+		[
+		    "job1",
+		    "job2",
+		    "job3"
+		]
+		```
+		- `job 4` is still waiting in the queue and hasn't started yet. This is because `job 1` and `job 2` were completed. Then, `job 3` was started and is still running when the queue ends.
+	- **Approach**:
+		- A list of queued jobs can represent the problem. A stack isn't appropriate because only one job can be processed at a time. This means the first job added to the queue most be completed before subsequent jobs can be started and completed. `append()` can be used to add jobs to the queue while `pop(0)` can be used to remove a job from the queue, once the current job is complete. When a job is completed, a `current_job` variable can be set to `None`, which can signify that a job can be removed from the queue and marked as the `current_job`.
+	- **Data Structures**:
+		- List 1: Represents a queue of jobs that need to be processed.
+		- List 2: Represents a list of jobs that have been completed.
+	- **Complexity**:
+		- Time: O(n), where n is the number of events.
+			- The Python `deque` library should be used to create a queue. Removing the first item from a regular list is an O(n) operation because all other elements in the list need to be shifted left.
+		- Space: O(m), where m is the number of jobs.
+	- Solution:
+		```python
+		from collections import deque
+		
+		def process_pipeline_events(events):
+		    if not events:
+		        return []
+		
+		    queued_jobs = deque()
+		    completed_jobs = []
+		    current_job = None
+		
+		    for event_type, job_id, _ in events:
+		        if event_type == "add":
+		            queued_jobs.append(job_id)
+		
+		            if current_job is None:
+		                current_job = queued_jobs.popleft()
+		
+		        elif event_type == "complete" and job_id == current_job:
+		            completed_jobs.append(current_job)
+		            current_job = None
+		
+		            if queued_jobs:
+		                current_job = queued_jobs.popleft()
+		
+		    return completed_jobs
+		```
 
 # Key Takeaways
 
@@ -1321,7 +1542,7 @@
 	- Since the input is **already sorted by timestamp**, it doesn't need to be sorted by `user_id`. This would destroy the **global** chronological order needed to determine if a session is still valid.
 	- Events can be processed in their existing order while maintaining `last_event_time` separately for each user. That gives us a true O(n) processing pass.
 
-## Heaps / Priority Queues
+## Heaps / Top-K
 
 - **Top K Frequent Events Problem**:
 	- A dictionary can tells us **how often each event occurred**, but it doesn't by itself give us the **top 2**.
@@ -1358,45 +1579,43 @@
 		- Python's `heapq` compares tuples by the first element first. Each item in the queue should therefor have the following strcucture: `(frequency, event_type)`.
 		- Python compares tuples lexicographically, if two frequencies are equal, Python will compare the event strings.
 
+## Stacks / Queues
+
+- A Python Stack can be implemented using an ordinary list.
+	- `append()` is used to add items to the stack.
+	- `pop()` is used to remove items from the stack.
+	- `stack[-1]` is used to inspect the element at the "top" of the stack.
+- Stack / Queue Types:
+	- Last In First Out (LIFO): The last item added to the stack is the first item removed.
+	- First In First Out (FIFO): The first item added to the stack is the first item removed.
+
+# Interview Preparation Topics
+
+| Priority     | Pattern                                     |
+| ------------ | ------------------------------------------- |
+| 🔴 Very high | Dictionaries / Sets                         |
+| 🔴 Very high | Sliding Window / Two Pointers               |
+| 🔴 Very high | Aggregation / Deduplication / Event Streams |
+| 🟠 High      | Sorting / Intervals                         |
+| 🟠 High      | Heaps / Top-K                               |
+| 🟡 Medium    | Stacks / Queues                             |
+| 🟡 Medium    | Binary Search                               |
+| 🟡 Medium    | Trees                                       |
+| 🟡 Medium    | Graphs                                      |
+| 🟢 Lower     | Linked Lists                                |
+| 🟢 Lower     | Dynamic Programming                         |
+
 # Notepad (Practice Problems)
 
 Note taking for practice problems. Only problems that pose a significant challenge or introduce a new algorithm will be recorded above.
 
 1. **Approach**:
-	- For the first pass through records, we want to keep track of a transaction's most recent version. This can be accomplished by maintaining a dictionary maps a transaction_id to its record. When a transaction_id is new, it is added to the dictionary. When a duplicate transaction arrives, its timestamp is compared against the recorded transaction and the recorded transaction is updated in the dictionary if needed. Once transactions are deduplicated, a second dictionary can map users to transaction totals by totaling all unique transactions for a user, regardless of time. This would need to be done in two passes, since records need to be properly deduplicated (keeping the latest record) before calculating totals.
+	- 
 2. **Data Structures**:
 	- 
 3. **Complexity**:
-	- Time: O(n) where n is the number of records.
-	- Space: O(m) where m is the number of unique users. 
+	- Time:
+	- Space:
 4. **Solution**:
 	```python
-	from datetime import datetime
-	
-	def deduplicate_and_total(records):
-		if not records:
-			return dict()
-	
-	    latest_records = dict()
-	    user_totals = dict()
-	
-	    for txn_id, user_id, amount, timestamp in records:
-	        # Parse the timestamp into a datetime object
-	        txn_time = datetime.strptime(timestamp, "%H:%M")
-	
-	        # Check if this transaction is the latest version of the transaction ID
-	        if txn_id not in latest_records:
-	            latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
-	            user_totals[user_id] = user_totals.get(user_id, 0) + amount
-	        else:
-	            _, existing_user_id, existing_amount, existing_time = latest_records[txn_id]
-	            if txn_time > existing_time: # Only update the transaction if it occurred later 
-	                if existing_user_id == user_id:
-	                    user_totals[user_id] = user_totals.get(user_id, 0) - existing_amount + amount
-	                else:
-	                    user_totals[existing_user_id] = user_totals.get(existing_user_id, 0) - existing_amount
-	                    user_totals[user_id] = user_totals.get(user_id, 0) + amount
-	                latest_records[txn_id] = (txn_id, user_id, amount, txn_time)
-	  
-	    return user_totals
 	```
