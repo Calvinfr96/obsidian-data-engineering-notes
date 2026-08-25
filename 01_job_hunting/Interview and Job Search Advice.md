@@ -175,7 +175,13 @@
 	1. Don’t ask about company culture or other mundane facts. They don’t care and neither should you.
 	2. What would make someone exceed expectations in this role within the first 6 months?
 	3. What **measurable** outcomes define success here?
-	4. Doing this helps you gather **meaningful**, **actionable** intelligence about the company.
+	4. If I were hired, what's the first thing I'd work on?
+	5. What are the KPIs for the team, org, or company? Have you hit your targets in the last cycle?
+	6. How many reorgs have you experienced in the last year?
+	7. I noticed your team recently launched X. What have you learned from the launch?
+	8. How much attrition has the team experienced this year? What are the primary drivers?
+	9. How much of the roadmap have you shipped in the last 6 months?
+	10. Doing this helps you gather **meaningful**, **actionable** intelligence about the company.
 9. Manage energy, not ego.
 	1. Confidence is about demonstrating you understand your own value, not pretending you don’t need the job.
 	2. Speak calmly and clearly about your results. This helps project authority.
