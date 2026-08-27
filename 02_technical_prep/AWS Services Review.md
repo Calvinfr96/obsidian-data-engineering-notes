@@ -1570,7 +1570,7 @@
 	- Separation of responsibilities
 	- Failure isolation
 > 	I would not design the service this way because it tightly couples the application with the backend services. Every time the backend services are modified, added, or removed, the application also needs to be modified. Tightly coupling the application with the backend services could also create race conditions. The alternative design makes more sense because each service can operate and scale independently. It also isolates failures to an individual service, without affecting other services.
-	- The bigger concern isn't necessarily a race condition. It's that the application now becomes responsible for coordinating multiple independent services.
+		- The bigger concern isn't necessarily a race condition. It's that the application now becomes responsible for coordinating multiple independent services.
 
 ### Overview
 - DynamoDB streams are very similar to S3 event notifications:
@@ -1690,6 +1690,256 @@
 		- Whether you'd use strong or eventual consistency for different operations.
 		- Any major tradeoffs you would consider.
 > 	For browsing concerts, I'd optimize for read performance by using DAX because concert metadata changes infrequently but receives very high read traffic. For ticket purchases, I'd use DynamoDB transactions with strong consistency to ensure inventory is never oversold. I'd store reservations in DynamoDB with a TTL so abandoned reservations expire automatically after 15 minutes. I'd use DynamoDB Streams to trigger downstream actions such as confirmation emails and analytics updates without tightly coupling the purchase API to those services. Customer support would use a GSI on `TicketID` for direct lookups. For executive reporting, I wouldn't build another GSI because the reports only run nightly; I'd instead export the data into an analytics platform such as S3 and Athena.
+
+# Redshift
+
+## Overview
+
+- Redshift is an **analytical** data warehouse designed for large-scale **OLAP** workloads.
+- Think about a workload like:
+	```
+	S3 / operational databases
+	        ↓
+	    ETL / ELT
+	        ↓
+	    Redshift
+	        ↓
+	Complex analytical queries
+	        ↓
+	Dashboards / BI / reporting
+	```
+- Redshift is optimized for queries that scan and aggregate **large amounts of data**, rather than for high-volume transactional operations. For example:
+	```sql
+	SELECT
+	    customer_id,
+	    DATE_TRUNC('month', order_date),
+	    SUM(revenue)
+	FROM orders
+	GROUP BY customer_id, DATE_TRUNC('month', order_date);
+	```
+	- This is very different from "Give me the order details for `order_id = 12345`."
+	- The first is an OLAP workload. The second is an OLTP workload.
+- **Scenario 1 - Choosing The Correct Database**:
+	- Suppose you're designing an e-commerce platform. The application receives:
+		- **50,000 orders/sec**
+		- Individual orders need to be created and updated quickly.
+		- The application frequently looks up individual orders by `OrderID`.
+		- Customers need low-latency access to their order information.
+	- Separately, the analytics team needs to run queries such as: "What was the total revenue by product category and region for each quarter over the last five years?"
+	- **Would you use Redshift as the primary database for the e-commerce application? If not, what characteristics of the two workloads make them better suited to different database technologies**?
+> 	I would choose DynamoDB as the primary database for the e-commerce application since it primarily uses transactional workloads. Redshift would be better suited to support the needs of the analytics team.
+		- The application has an **OLTP-style workload**:
+			- Very high write volume
+			- Frequent individual record lookups
+			- Low-latency requirements
+			- Predictable access patterns such as `OrderID → Order`
+		- The analytics workload is fundamentally different:
+			- Large historical datasets
+			- Complex aggregations
+			- Scanning many rows
+			- Grouping and joining data
+			- Analytical queries over long time periods
+		- The important takeaway is: **Don't choose a database based solely on how much data it stores. Choose it based on the workload and access patterns**.
+
+## Redshift vs. Athena
+
+- Suppose your company already has **20 TB of historical sales data in S3**, stored as Parquet.
+- The analytics team runs approximately **10 queries per day**. The queries are moderately complex but don't need sub-second latency.
+- **Would you load this data into Redshift, or would you query it directly using Athena? What factors would you consider when making that decision?**
+> 	Since the data is already stored in Parquet format and the analytics team only needs to run 10 moderately-complex queries per day, it could make sense to keep the data in S3 and query it using Athena. When making the decision to switch to Redshift, you'd need to evaluate the difference in cost, operational overhead, and future demand.
+	- There's little reason to introduce a dedicated warehouse if the data is already in an analytics-friendly format and query demand is relatively low.
+	- Athena:
+		- No dedicated warehouse to manage
+		- Query data directly in S3
+		- Good for intermittent/ad-hoc analytics
+		- Pay based largely on data scanned
+	- Redshift:
+		- Dedicated analytical warehouse
+		- Better suited to **sustained, high-volume** analytical workloads
+		- Can provide more predictable performance
+		- Introduces ongoing compute/capacity considerations
+
+## Performance Considerations
+
+- Suppose you have a table with:
+	- 1 billion orders
+	- Columns:
+		- `OrderID`
+		- `CustomerID`
+		- `ProductID`
+		- `OrderDate`
+		- `Region`
+		- `Revenue`
+		- `PaymentMethod`
+		- `ShippingAddress`
+- An analyst runs:
+	```sql
+	SELECT
+	    Region,
+	    SUM(Revenue)
+	FROM orders
+	WHERE OrderDate >= '2026-01-01'
+	GROUP BY Region;
+	```
+	- Redshift doesn't need to treat the table like a traditional row-oriented transactional database. Redshift uses **columnar storage**, meaning data for the same column is stored together.
+	- For the query above, Redshift primarily needs `Region`, `Revenue`, and `OrderDate`. The rest of the columns can be ignored when scanning the data.
+- **Why is columnar storage particularly beneficial for analytical queries like this, but potentially less useful for an OLTP workload that frequently retrieves or updates an entire individual row**?
+> 	Columnar storage is beneficial for analytical workloads because it provides the ability prune unnecessary columns, significantly reducing the amount of data that needs to be scanned. For transactional workloads, which retrieve or update entire roads, this ability provides little to no performance benefit.
+
+### Data Distribution
+- Redshift is a distributed system. A large table can be spread across multiple compute nodes so that queries can execute in parallel.
+- Suppose you have:
+	- 1 billion orders
+	- Redshift Cluster:
+		- Node 1
+		- Node 2
+		- Node 3
+		- Node 4
+	- If one node receives substantially more data than the others, that node becomes a bottleneck.
+- Redshift provides several distribution strategies:
+	- **Key Distribution**:
+		- You select a column as the **distribution key**, and Redshift uses that value to determine where rows should be stored. For example, if `customer_id` is chosen as the distribution key, rows will be distributed across nodes based on `customer_id`.
+- **Scenario 1**: Your `orders` table contains 1 billion rows. You need to frequently join it with a `customers` table using: `orders.customer_id = customers.customer_id`.
+- **Why might choosing `customer_id` as the distribution key for `orders` improve query performance? And what potential problem would you investigate before making that choice**?
+> 	I would consider using customer_id as the distribution key for orders because it needs to be joined with the customers table. Before making the choice, I'd investigate how well customer_id distributes data across the combined table.
+	- If both `orders` and `customers` are distributed using the same `customer_id` key, rows belonging to the same customer can be colocated on the same Redshift node. Thiscan reduce the amount of **data redistribution across nodes during the join**, substantially improving performance for large tables.
+	- Setting the distribution key: `DISTKEY(customer_id)`
+	- Don't focus on how well `customer_id` distributes data across the combined table. Instead, focus on the **distribution of `customer_id` values within the table being distributed**. For example, if `Customer A` has 400 million rows, while the average customer has hundreds of rows on average, `customer_id` would make a poor distribution key because it would create a **data-skewed node**.
+- **Scenario 2**: Suppose `customer_id` is highly skewed, so using it as a `DISTKEY` would create an uneven distribution. However, your queries **frequently join `orders` with `customers` on `customer_id`**. You still want to avoid expensive data redistribution during the join.
+- **What would you consider instead of forcing `customer_id` to be the distribution key**?
+	- If `customer_id` is **highly skewed**, you have two competing goals:
+		- Keep related rows colocated to make joins efficient.
+		- Avoid concentrating too much data on one node.
+	- Redshift gives you another distribution strategy: **`ALL` distribution** (`DISTSTYLE ALL`). With `ALL`, Redshift stores a copy of the table on **every compute node**. This can make sense for a **small dimension table** such as `customers`.
+	- Then you could distribute the much larger `orders` table using a more evenly distributed strategy, while every node already has a copy of `customers`. The join can then happen locally without having to redistribute the entire `customers` table.
+	- **The tradeoff**: `ALL` isn't appropriate for huge tables because you're storing multiple copies of the data. It's generally useful when a relatively small table is frequently joined with large distributed tables.
+	- Another option: `EVEN`
+		- If you don't have a good distribution key, Redshift can distribute rows **evenly across the nodes**.
+		- So if `customer_id` is heavily skewed, you could rely in `EVEN` distribution instead.
+		- The major tradeoff is that joins may require **data distribution across nodes**.
+> 	If customer_id is too skewed to use as the distribution key, I'd consider distributing the large orders table evenly and using ALL distribution for the relatively small customers dimension table. That avoids the skew while keeping the dimension table available on every node for local joins.
+- **Key takeaway:** just like with DynamoDB and Spark, **a good distribution key needs to balance the access pattern with even data distribution**.
+
+### Sort Keys
+- A **sort key** determines how rows are physically ordered within Redshift tables. This is particularly useful when queries frequently filter or range-scan on a particular column.
+- Suppose you have: `orders`: `[order_id, customer_id, order_date, region, revenue]`. Analysts frequently run:
+	```sql
+	SELECT
+	    region,
+	    SUM(revenue)
+	FROM orders
+	WHERE order_date >= '2026-01-01'
+	GROUP BY region;
+	```
+	- If `order_date` is an appropriate sort key, Redshift can use the ordering of the data to **avoid scanning irrelevant portions of the table**.
+	- This is conceptually similar to what you learned with Athena and partitioning, but they're not the same mechanism. Partitioning in S3/Athena allows entire partitions to be skipped based on how data is filtered in a query. Sort keys allow data **within a partition** to be skipped if the data is sorted and falls outside of the requested range.
+- **Scenario**: You have a Redshift `orders` table containing **10 billion rows**. Most analytical queries filter by `order_date`, such as: `WHERE order_date BETWEEN '2026-01-01' AND '2026-01-31'`.
+- `order_date` is currently **not** a sort key.
+- **Why could adding `order_date` as a sort key improve query performance? What would be the downside of choosing a sort key that doesn't align with the workload's common query patterns**?
+> 	order_date could act as a good sort key if analysts frequently filter data based on order_date. Using this column as a sort key would allow Redshift to skip scanning sections of data within a partition based on the requested range. Choosing a sort key that doesn't align with common query patterns eliminates this benefit.
+	- In Redshift, "sections of the table" is more accurate than saying "sections of a partition" because Redshift's distribution and sorting are separate concepts.
+	- Optimize physical data layout around the workload's actual access patterns.
+
+### Distribution Key vs. Sort Key
+- Distribution keys determine **which node stores a row**. The primary concern is: "How do I distribute data across nodes and minimize expensive data movement during joins?"
+- Sort keys determine **how data is ordered within the storage of a node**. The primary concern is: "How can I efficiently locate/filter the data that queries commonly need?"
+- Distribution and Sort keys can be used together, assuming those choices actually fit the workload and don't create problematic skew:
+	```
+	orders
+	
+	DISTKEY(customer_id)
+	SORTKEY(order_date)
+	```
+- **Scenario**: Distribution + Sort Keys Together
+- Suppose you have a Redshift `orders` table with:
+	- 5 billion rows
+	- `customer_id` is reasonably evenly distributed
+	- Analysts frequently join `orders` to `customers` on `customer_id`
+	- Analysts frequently filter orders by `order_date`
+- **What distribution key and sort key would you consider for `orders`, and why would you choose each one**?
+> 	I would choose customer_id as the distribution key because it evenly distributes data across nodes. I would choose order_date as the sort key because analysts frequently filter data based on order_date. This allows data within a node to be effectively queried based on order_date.
+	- **`customer_id` as the distribution key:** The prompt tells us it's reasonably evenly distributed, and it matches the frequent join between `orders` and `customers`. This can reduce data redistribution during the join.
+	- **`order_date` as the sort key:** Analysts frequently filter by `order_date`, so ordering the data around that column can make those range queries more efficient.
+	- **Important Point**: The distribution key **doesn't** have to be the column with the highest cardinality. What matters is whether it **provides reasonably even distribution _and_ supports important access patterns** such as joins.
+
+## Loading Data
+
+- Suppose your company has a daily batch of sales data arriving in S3:
+	```
+	s3://sales/
+	    2026-08-25/
+	        part-001.parquet
+	        part-002.parquet
+	        ...
+	```
+- You need to load that data into a Redshift `sales` table every night.
+- **Why might you prefer loading the data into Redshift in batches from S3 rather than having your application make an individual `INSERT` into Redshift for every sale**?
+	- Think about:
+		- Redshift's intended workload
+		- Network/database overhead
+		- The difference between OLTP and OLAP
+		- The number of records involved
+> 	Redshift is designed as an OLAP database that is designed for handling data in bulk, not performing individual inserts. Loading data in batches fits this type of workload better than individual inserts. It also saves network overhead because you would be making one request per batch instead of one request per row. If the batch size is large enough, this benefit becomes meaningful.
+- A common architectural pattern is:
+	```
+	Application / OLTP systems
+	          ↓
+	         S3
+	          ↓
+	     Bulk loading
+	          ↓
+	      Redshift
+	          ↓
+	     Analytics / BI
+	```
+	- Important Points:
+		- Redshift is an **OLAP** system designed for analytical workloads.
+		- Bulk loading is much more appropriate than row-by-row inserts.
+		- Batching reduces **network and request overhead**.
+		- Larger batches allow Redshift to process the data more efficiently.
+	- This also reinforces an important architectural principle: **Don't force an OLAP system to behave like an OLTP database**.
+	- If an application is generating thousands of individual transactional writes per second, those writes should generally go to an appropriate operational datastore first. Redshift can then receive the data in bulk for analytical processing.
+
+### Loading Data From S3
+- There's an AWS-specific mechanism worth knowing here: the **`COPY` command**:
+	```sql
+	COPY sales
+	FROM 's3://sales/2026-08-25/'
+	...
+	```
+	- Instead of sending every row individually, Redshift can load a large collection of files from S3 in parallel. This fits naturally with Redshift's distributed architecture:
+		```
+		                 S3
+		        ┌────────┼────────┐
+		        ↓        ↓        ↓
+		      Files    Files    Files
+		        ↓        ↓        ↓
+		     Redshift compute nodes
+		        ↓        ↓        ↓
+		          Parallel loading
+		```
+- **Scenario**: You have a Redshift cluster containing **5 billion orders**. You have already determined:
+	- `customer_id` is evenly distributed.
+	- Orders are frequently joined to `customers` using `customer_id`.
+	- Analysts frequently filter orders by `order_date`.
+	- Data arrives daily in large batches from S3.
+- **Walk me through your overall design for this `orders` table. Specifically**:
+	- Distribution key
+	- Sort key
+	- How you'd load the data
+	- Why each choice makes sense for the workload
+> 	I'd choose customer_id as the distribution key because it would evenly distribute data across all nodes. I'd use order_date as the sort key because analysts frequently filter orders by date. Finally, I'd load data in bulk, rather than loading individual records, because Redshift's distributed architecture is better suited at handling data in bulk.
+		- Bulk loading also avoids the overhead of issuing individual database requests for every row.
+- **Scenario 2**: You have 100 GB of Parquet data stored in S3. The analytics team runs **2–3 ad-hoc queries per week**. The queries don't have strict latency requirements and can take several minutes. There is no requirement for complex warehouse features, and the dataset is expected to remain relatively small.
+- **Would you introduce Redshift? Or would you keep the data in S3 and use Athena**?
+> 	I would keep the data in S3 and query it using Athena because there isn't a regular demand for intensive, low-latency queries that would justify using Redshift's distributed computing architecture.
+	- Key Points:
+		- Data is already in **S3 and Parquet**.
+		- Query frequency is extremely low.
+		- There isn't a strict latency requirement.
+		- The workload doesn't justify maintaining a dedicated analytical warehouse.
+		- Athena can query the data directly when needed.
+- **Key Takeaway**: Redshift becomes more compelling when you have sustained analytical workloads with significant query volume, performance requirements, or warehouse-specific needs. Athena is often preferable for intermittent/ad-hoc queries directly against data in S3.
 
 # ElastiCache / Redis
 
@@ -2420,6 +2670,1986 @@ Always ask: **What guarantees does the business require**?
 		- Which components require durability versus speed.
 		- Any tradeoffs you would consider.
 > 	I'd cache player profiles in Redis because they're read frequently but updated infrequently, storing them as Redis Hashes. I'd use a Redis Sorted Set for the leaderboard because it efficiently maintains player rankings. I'd use Pub/Sub for online presence notifications because they're real-time but don't require durable delivery. Temporary match state would be stored in Redis with a 30-minute TTL so players can reconnect without leaving stale state indefinitely. For analytics events, I'd use a write-behind strategy to buffer the high volume of writes before persisting them. For match results, I'd bypass write-behind and use a write-through or direct database write because rankings and rewards require durable storage.
-	- Profiles should be cached using a **Redis Hash** rather than a string because profiles naturally contain multiple fields.
-	- If someone is offline, missing an "online" notification is inconsequential because another update will eventually arrive.
-	- Temporary match state should be stored in Redis with a TTL of 30 minutes.
+			- Profiles should be cached using a **Redis Hash** rather than a string because profiles naturally contain multiple fields.
+			- If someone is offline, missing an "online" notification is inconsequential because another update will eventually arrive.
+			- Temporary match state should be stored in Redis with a TTL of 30 minutes.
+
+# Simple Notification Service (SNS) & Simple Queue Service (SQS)
+
+## Overview
+
+### Design Scenario
+- Imagine you're building an e-commerce platform. Whenever an order is placed, the following systems need to be notified:
+	- Email Service
+	- Inventory Service
+	- Billing Service
+	- Analytics Service
+- **Option A**: The Order Service directly calls each downstream service:
+	```
+	Order Service
+	
+	↓
+	
+	Email
+	
+	↓
+	
+	Inventory
+	
+	↓
+	
+	Billing
+	
+	↓
+	
+	Analytics
+	```
+- **Option B**: The Order Service publishes a single message. A messaging service distributes that message to all **interested** consumers:
+	```
+	Order Service
+	
+	↓
+	
+	Message
+	
+	↓
+	
+	Messaging Service
+	
+	↓
+	
+	Email
+	
+	Inventory
+	
+	Billing
+	
+	Analytics
+	```
+- **Which architecture would you choose and why**?
+	- Think about:
+		- Loose coupling
+		- Scalability
+		- Adding new downstream services
+		- Failure isolation
+> 	I would choose option be because it loosely couples the order service with the downstream serve. The order service only needs to worry about publishing the message to the message broker. The message broker is then responsible for distributing the message to all active subscribers. This allows the order service to scale easily as the number of downstream dependencies increases. It also isolates failures to the singe service(s) which failed to properly process the message using its respective processing logic.
+		- SNS is technically called a pub/sub messaging service, not a message broker.
+- Now imagine the Inventory Service goes offline for 30 minutes. Should:
+	- The message be lost?
+	- The Order Service wait?
+	- The message be stored somewhere until Inventory comes back?
+- **How would you design the service**?
+> 	Ideally, messages should be retained for a practical period of time, allowing the inventory service to retrieve the messages it did not receive while it was offline. The order service wouldn't need to wait on the inventory service because each downstream dependency should be able to retrieve messages independently. I would design the message broker to retain messages for an appropriate amount of time, rather than storing messages in a separate service.
+	- SNS should not provide message durability. SQS queues should act as subscribers which can send and retain messages bound for each downstream service. That's an extremely important SNS + SQS pattern.
+	- Separate queues are needed because each consumer needs an **independent copy of the message**. If you put all four consumers on one SQS queue, they would compete for messages. A message consumed by Inventory would no longer be available to Billing.
+- Suppose instead of four services needing the message, there's **only one** background worker responsible for resizing uploaded product images.
+- **Would you still use the same messaging pattern? Or would you choose something different**?
+	- Think about:
+		- **One producer → Many consumers**
+		- **One producer → One consumer**
+> 	If only one downstream service needed the message, I would use a message queue instead of a message broker, since there is a one-to-one relationship between publishers and subscribers, instead of a one-to-many relationship.
+			- Use SQS when you have a queue-based workload where messages are processed by workers independently.
+
+### Mental Model
+- SNS: "Broadcast this event to everyone interested."
+	```
+							 ┌→ SQS → Email
+							 │
+	Order Service → SNS ─────┼→ SQS → Inventory
+							 │
+							 ├→ SQS → Billing
+							 │
+							 └→ SQS → Analytics
+	```
+	- Provides fanout of SNS with durability of SQS.
+- SQS: "Put this work somewhere so a worker can process it reliably."
+	- SQS offers a fanout pattern similar to SNS. The key distinction is that **each message in the queue is processed once**. Unlike SNS, a copy of each message is not sent to each subscriber.
+	- Instead, each subscriber asynchronously processes messages from the queue, allowing the queue to be cleared more quickly.
+	- This is one of the major reasons **SQS is useful for decoupling producers from consumers**: the producer doesn't have to slow down simply because consumers temporarily can't keep up.
+	- Think of one really long grocery line being handled by multiple cashiers. Each cashier doesn't repeatedly process the same customer's cart. Instead, each cashier handles one customer at a time, clearing the line more quickly than one lone cashier.
+	- Services pulling messages from SQS need to be designed to be idempotent, in order to prevent a scenario where a message that is processed more than once creates **duplicate effects**.
+	- SQS keeps sending a message to a consumer until the consumer deletes the message.
+	- Important metrics:
+		- Queue Depth: Number of messages waiting in the queue.
+		- Age of Oldest Message: Provides an indication of the likelihood of messages expiring before they're processed.
+		- Consumer Processing Rate: How quickly consumers are processing and deleting messages.
+		- Consumer Errors: Number of message processing errors.
+		- Message Visibility / In-Flight Counts: How long a message is visible to a consumer.
+
+## Core Concepts
+
+### Dead-Letter Queues
+- A Dead-Letter Queue (DLQ) can be configured with an appropriate maximum receive count. This prevents poison messages from being retried indefinitely, which wastes consumer capacity and can prevent the system from efficiently processing healthy messages.
+- The DLQ also gives the team a place to investigate and potentially **redrive failed messages** after resolving the underlying issue.
+
+### Visibility Timeout
+- After a worker receives a message, SQS temporarily hides it from other consumers. If processing succeeds before the timeout, the message is deleted and becomes permanently unavailable to other consumers.
+- If a worker crashes before deleting a message or takes too long to process a message, the visibility timeout expires and the message becomes available to other consumers.
+- **This is another way duplicate processing can occur**.
+
+### Message Retention
+- The SQS retention period determines how long a message can remain in a queue before being automatically deleted.
+- This is distinct from the visibility timeout, which determines how long a message remains invisible to other consumers while it is being processed
+
+# Kinesis Data Streams
+
+## Overview
+
+- The first distinction to understand is that Kinesis Data Streams is designed for **real-time streaming data**.
+- A useful mental model is:
+	```
+	Producers
+	   │
+	   ├── Event
+	   ├── Event
+	   └── Event
+	        ↓
+	┌─────────────────────┐
+	│ Kinesis Data Stream │
+	│                     │
+	│ Shard 1             │
+	│ Shard 2             │
+	│ Shard 3             │
+	└─────────────────────┘
+	        ↓
+	   Consumers
+	   ├── Lambda
+	   ├── Flink
+	   └── Custom apps
+	```
+- Unlike SQS, where the typical model is **a message being processed by one consumer**, Kinesis allows multiple independent consumers to process the **same stream of records**.
+- The stream also retains records for a configurable period, allowing consumers to **re-read records** rather than permanently losing them after one consumer processes them.
+- **Scenario**: Imagine an advertising platform receives **100,000 impression events per second**, with peaks of **500,000 events/sec**.
+- You need to:
+	- Process the events in near real time to update an analytics dashboard.
+	- Have a separate consumer process the events for billing.
+	- Store the events in S3 for historical analysis.
+	- Allow a new analytics consumer to process **historical events** when it is deployed.
+- Why might **Kinesis Data Streams** be a better fit than **SQS** for this workload?
+> 	Kinesis is more appropriate for this use case than SQS because multiple consumers need to ingest the same events for different purposes. Additionally, historical events need to processed by an analytics consumer. Instead of using an SNS + SQS fanout pattern, Kinesis Data Stream allows the same events to processed by multiple consumers without being deleted.
+	- Kinesis provides a **persistent ordered stream of records** that consumers track independently. A consumer can fall behind, catch up, or reread records within the stream's retention period.
+	- Kinesis doesn't mean records are literally "never deleted." Records are retained for a configured retention period and then expire automatically.
+
+## Shards & Partition Keys
+
+- A Kinesis Data Stream is divided into **shards**:
+	```
+	             Stream
+	                │
+	       ┌────────┼────────┐
+	       ↓        ↓        ↓
+	    Shard 1  Shard 2  Shard 3
+	```
+- When a producer sends a record, it provides a **partition key**. Kinesis uses that partition key to determine which shard receives the record. This means your partition-key choice affects **how evenly the workload is distributed**.
+- **Scenario**: Your advertising platform receives events containing:
+	- `user_id`
+	- `advertiser_id`
+	- `campaign_id`
+	- `event_type`
+	- `timestamp`
+- Your data stream has three shards. You initially choose `advertiser_id` as the partition key, but one advertiser is responsible for 60% of the traffic.
+- What problem could this create in Kinesis, and what would you investigate when choosing a better partition key?
+> 	Using advertiser_id as the partition key could lead to poor workload distribution among the shards of the data stream. One shard would receive about 60% of advertising events while others would receive relatively few events. When choosing a partition key, I'd look at how evenly the key distributes workload, not just data.
+	- Choose partition keys based on expected traffic distribution, not simply cardinality or record distribution.
+- If `advertiser_id` is the partition key and one advertiser generates 60% of traffic:
+	```
+	Advertiser A → 60% of events
+	Advertiser B → 10%
+	Advertiser C → 10%
+	...
+	             ↓
+	       Kinesis routing
+	             ↓
+	Shard 1 → ████████████████████ 60%
+	Shard 2 → ███                  10%
+	Shard 3 → ███                  10%
+	```
+	- Shard 1 can become a **hot shard**, potentially limiting throughput even though the stream as a whole has plenty of capacity.
+
+## Ordering
+
+- There's another important reason partition-key selection matters. Kinesis guarantees **ordering within a shard, not across shards**.
+- Suppose you're processing gameplay events:
+	```
+	Player 123:
+	  login
+	  purchase
+	  level_up
+	  logout
+	```
+	- You need those events to be processed **in that order**.
+	- A player's `user_id` should be used as the partition key for the data stream since all of the player's events will be sent to the same shard, where ordering will be guaranteed.
+- **Important Tradeoff**:
+	- **Good partition key** → evenly distributes traffic.
+	- **Ordering requirement** → related records must share a partition key/shard.
+	- The partition key needs to balance **both workload distribution and ordering requirements**.
+
+## Consumer Failure
+
+- Let's say you have:
+	```
+	Kinesis
+	   ↓
+	Analytics Consumer
+	```
+	- The consumer successfully processes records through sequence number `1000`, but then crashes.
+	- When it comes back online, you **don't want it to start at the newest record and permanently skip records 1001–1050**.
+- How does Kinesis allow a consumer to resume processing from where it left off? What mechanism would you use to track the consumer's position in the stream?
+	- A Kinesis consumer typically:
+		1. Processes records.
+		2. **Checkpoints** the sequence number it has successfully processed.
+		3. If it crashes, resumes from the last checkpoint rather than starting over from the beginning.
+	- With the **Kinesis Client Library (KCL)**, checkpointing is commonly managed through DynamoDB.
+	- One important nuance: the consumer doesn't simply "send the sequence number to Kinesis." **Kinesis stores the stream records; the consumer/application is responsible for tracking its checkpoint**.
+	- Checkpointing does not eliminate duplicate processing. If a consumer processes a record successfully but crashes **before checkpointing it**, that record may be processed again after recovery. Therefore, the downstream processing should ideally be **idempotent**.
+
+### Slow Consumers
+- Let's say your stream receives 100,000 events/sec, but the analytics consumer can only process 80,000 events/sec.
+- The producer continues sending 100,000 events/sec. Over time, the consumer falls further and further behind.
+- What problem does this create for the consumer, and what metrics or signals would you monitor to determine whether the consumer is falling behind?
+> 	Since the consumer is lagging behind at a rate of 20,000 events/sec, it may never be able to process the events at the end of the stream before the retention period expires. A consumer's processing latency can be a good indicator of whether it is falling behind. If the consumer can't process events at the same rate they're being published to the stream, it will fall behind.
+	- The bigger concern isn't just processing latency; it's **consumer lag**—how far behind the consumer is from the latest record in the stream.
+	- Key Metrics:
+		- **Consumer lag / iterator age** → directly tells you how far behind the consumer is.
+		- **Consumer processing rate** → compare records processed/sec against records produced/sec.
+		- **Incoming records/bytes** → determine whether producer throughput has increased.
+		- **Retention period** → determine whether the consumer risks falling so far behind that records expire before being processed.
+
+### Consumer Scaling
+- Suppose your stream has **4 shards**, and your analytics consumer has **4 workers—one processing each shard**.
+- You discover:
+	- Shard 1 = 95% utilization
+	- Shard 2 = 30%
+	- Shard 3 = 25%
+	- Shard 4 = 20%
+- The overall stream still has plenty of unused capacity, but the consumer is falling behind.
+- Would simply adding more consumer workers necessarily solve the problem? If not, what would you investigate?
+> 	Adding more workers wouldn't necessarily solve the problem, especially if the consumer processing events from shard 1 is falling behind due to an issue with a downstream dependency. You'd need to first investigate why the consumer is falling behind by investigating metrics such as latency, memory utilization, and CPU utilization.
+	- **The uneven shard utilization itself is a major clue**. Because **Shard 1 is the bottleneck**, adding workers to the other shards doesn't help.
+	- Things to investigate:
+		- Whether the **partition key is causing a hot shard**.
+		- Whether records assigned to Shard 1 are inherently more expensive to process.
+		- Consumer CPU/memory/latency for that shard.
+		- Whether the downstream dependency is slower for those records.
+		- Whether the shard itself has reached its throughput limit.
+	- If the problem is a **hot partition caused by the partition key**, the solution may involve changing the partitioning strategy or increasing shard capacity—not simply adding consumers.
+	- Before scaling horizontally, identify whether the bottleneck is actually the number of workers or a constrained resource downstream/underneath them.
+
+### Hot Partitions
+- You discover the consumer isn't actually slow. The problem is that **70% of incoming events are being routed to Shard 1**because of the chosen partition key. The other shards have plenty of capacity.
+- What are two different approaches you could take to address this hot-shard problem?
+> 	Since there's no issue with consumer performance and 70% of events are being routed to one shard, changing the partitioning strategy would be more effective than increasing shard capacity. Increasing available shard capacity could theoretically work, but would be a brute-force approach. It wouldn't solve the underlying traffic distribution problem. The partitioning strategy would need to be modified to more evenly distribute traffic while preserving necessary event ordering.
+	- Traffic distribution **must always be balanced with required ordering**. Don't sacrifice required ordering merely to improve distribution.
+
+### Multiple Consumers
+- Suppose you have:
+	```
+	                 Kinesis
+	                    │
+	        ┌───────────┼───────────┐
+	        ↓           ↓           ↓
+	    Analytics     Billing      S3
+	    Consumer      Consumer    Consumer
+	```
+	- All three consumers need to process the **same events independently**.
+	- The Analytics consumer occasionally falls behind, but Billing must continue processing events in near real time.
+- Why is Kinesis's independent consumer model useful here? What would happen if the Analytics consumer became very slow? Would it prevent the Billing consumer from continuing to process newer records?
+> 	Kinesis's independent consumer model is useful here because each consumer can process events at varying rates, without disrupting one another. If analytics falls too far behind, it could fail to read certain events before their retention period expires. This would not impact any other consumer.
+	- If Analytics falls behind, its lag increases independently. **Billing doesn't have to wait for Analytics** and can continue reading newer records.
+	- The main consequence for Analytics is that it could eventually reach the stream's **retention boundary** and lose the ability to read records that have expired.
+- Kinesis vs. SQS:
+	- **SQS**: Messages are generally consumed from a queue by **competing** consumers.
+	- **Kinesis**: Multiple consumers can independently read the same stream and maintain independent positions.
+
+# Amazon Data Firehose
+
+## Overview
+
+- Kinesis Data Steams and Firehose involve streaming data, but they solve **different problems**.
+- Mental Model:
+	- Data Streams:
+		```
+		Producers
+		    ↓
+		Kinesis Data Streams
+		    ↓
+		Consumers
+		 ├── Lambda
+		 ├── Flink
+		 ├── Custom application
+		 └── ...
+		```
+		- You get control over how records are consumed and processed.
+	- Data Firehose:
+		```
+		Producers
+		    ↓
+		Firehose
+		    ↓
+		Buffer / Batch
+		    ↓
+		Destination
+		 ├── S3
+		 ├── Redshift
+		 ├── OpenSearch
+		 └── ...
+		```
+		- Firehose is primarily a **managed delivery mechanism** for getting streaming data into destinations.
+		- You don't manage shards or consumer applications in the same way.
+- **Scenario**: Your application generates 50,000 click events/sec. The business wants all events continuously delivered to **S3** for later analytics.
+- There is **no requirement for:**
+	- Custom real-time processing
+	- Multiple independent consumers
+	- Replayable consumer positions
+	- Complex stream transformations
+- The primary requirement is simply: "Reliably get these events into S3 with minimal operational overhead."
+- Would you choose **Kinesis Data Streams or Kinesis Data Firehose**?
+> 	I would choose Kinesis Data Firehose because there is not requirement for custom real-time processing, independent consumers, or repayable consumer positions. The primary requirement is to reliably load events to S3 with minimal operational overhead. Firehose can optimize delivery to S3 by collecting events into appropriately-sized batches and writing them to S3 batch-by-batch, instead of event-by-event, which would help reduce costs associated with API calls.
+	- **Firehose removes much of the operational burden**. You don't need to manage shards, consumers, checkpoints, or custom stream-processing infrastructure when the requirement is essentially: "Take streaming data and reliably deliver it to S3."
+	- Firehose buffers records before delivering them to the destination, which is much more efficient than making an S3 write for every individual event.
+- **Mental Model**:
+
+| Requirement                               | Better fit                |
+| ----------------------------------------- | ------------------------- |
+| Custom real-time processing               | **Kinesis Data Streams**  |
+| Multiple independent consumers            | **Kinesis Data Streams**  |
+| Replay/control consumer position          | **Kinesis Data Streams**  |
+| Simple streaming → S3 delivery            | **Kinesis Data Firehose** |
+| Minimize stream infrastructure management | **Kinesis Data Firehose** |
+
+## Delivery Latency
+
+- Suppose you have a requirement: Click events must appear in S3 within approximately 60 seconds.
+- You configure Firehose to deliver to S3.
+- Why might Firehose **not deliver every event immediately** after it arrives? What tradeoff is Firehose making when it buffers records before delivering them to S3?
+> 	Firehose might not deliver every event immediately after it arrives because events are only required to be available within 60 seconds, not immediately. The tradeoff being made when events are buffered is that delivery latency will be higher, but API costs will be reduced because S3 doesn't need to be called for every event.
+- The basic flow is:
+	```
+	Events
+	  ↓
+	Firehose buffer
+	  ↓
+	Buffer reaches size/time threshold
+	  ↓
+	Batch delivery
+	  ↓
+	S3
+	```
+	- Firehose deliberately trades some **delivery latency** for **efficient batched delivery**.
+	- The important point is that Firehose can buffer based on configured delivery conditions, so the destination doesn't need to receive one write per event.
+
+## Transformations
+
+- Suppose your incoming events look like:
+	```
+	{
+	    "user_id": 123,
+	    "event_type": "click",
+	    "email": "calvin@example.com",
+	    "timestamp": "..."
+	}
+	```
+- Before storing the data in S3, you want to:
+	- Remove the `email` field.
+	- Convert the timestamp into a standardized format.
+	- Add a derived field.
+- You don't need complex distributed processing; the transformation is small and performed independently on each record.
+- Would Firehose be capable of handling this type of transformation? When would you decide that the transformation is complex enough that you should instead use something like **Glue/Spark or another dedicated processing system**?
+> 	Yes, Firehose is capable of handling the transformations because they don't require distributed processing. They're small and performed independently on each record. You would want to use a dedicated processing system when the data requires heavier transformations, such as joins or aggregations.
+	- Firehose transformations are a good fit when each record can be transformed **independently** without needing significant state or distributed computation.
+	- Once the transformation requires things like:
+		- **Joins** between datasets
+		- Large-scale **aggregations**
+		- Complex multi-stage transformations
+		- Significant distributed computation
+		- **Stateful processing** across many records
+	- You'd generally move the workload to something like **Glue/Spark** or another dedicated processing system.
+	- The broader principle is: Firehose is primarily a delivery service with lightweight transformation capabilities, not a general-purpose distributed data-processing engine.
+
+## Failure Handling
+
+- Suppose you have:
+	```
+	Application
+	    ↓
+	Firehose
+	    ↓
+	S3
+	```
+- Suddenly, the S3 destination becomes temporarily unavailable. You **don't want the streaming records to simply disappear** while S3 is unavailable.
+- What would you expect Firehose to do in this situation, and why is this different from simply having your application write directly to S3 for every event?
+> 	I would expect Firehose to write the batch to a backup location or persist the data for a reasonable amount of time. This is different than having the application write directly to S3 because the application doesn't have to worry about the write being successful. That becomes Firehose's responsibility.
+	- **Firehose takes responsibility for reliable delivery**, so the producer doesn't need to implement its own buffering, retry, and delivery logic around every S3 write.
+	- Firehose **doesn't necessarily write to a backup location when delivery fails**. The exact failure behavior depends on the destination and configuration. The important concept is that Firehose **buffers and retries delivery**, rather than immediately losing records when the destination has a transient failure.
+
+# Database Migration Service (DMS)
+
+## Overview
+
+- **Scenario**: A company has a production **PostgreSQL** database running on-premises. They want to migrate it to **Amazon RDS for PostgreSQL**. The database is large, and the application **cannot afford to be offline for several hours** while the migration occurs.
+- How would you approach this migration using **AWS Database Migration Service (DMS)**?
+> 	I would choose a recent checkpoint in the PostgreSQL database as a point from which I'd perform an initial full load into RDS. Once the initial full load is complete, I'd use the database transaction logs to perform CDC and incrementally load data from the initial checkpoint. Once RDS has caught up with the PostgreSQL database and both databases are confirmed to contain the same data, I would cutover to RDS.
+	- This is the standard **full load + CDC** migration pattern.
+	- The important part is that **CDC captures changes occurring while the initial load is running**. That prevents changes made during the potentially long full-load process from being lost.
+	- DMS needs to establish the appropriate **source position/transaction-log position** so changes aren't missed or duplicated between the full load and CDC phases. You don't simply "choose a recent checkpoint."
+	- The final step is arguably the most important: Don't cut over merely because CDC is running. Validate that the target has caught up and that the source and target data are consistent.
+
+## Full Load vs. Change Data Capture (CDC)
+
+- Suppose the initial full load takes **6 hours**. During those 6 hours, the application continues writing to PostgreSQL:
+	```
+	10:00 ─────────────────────────────── 16:00
+	       Full load running
+	
+	Writes:
+	10:30 → Order A updated
+	11:45 → Order B inserted
+	13:20 → Order C updated
+	15:50 → Order D inserted
+	```
+- If you performed **only the full load**, the RDS database would reflect the source as it existed when the full load captured the relevant data—not necessarily the current state at 16:00.
+- What role does **CDC** play during this six-hour full load? Why is it important that DMS starts CDC from an appropriate position so that changes aren't missed between the initial load and CDC processing?
+> 	CDC acts as a sort of "bookmark" in the transaction log that tells DMS where to start performing incremental loads using CDC once the initial full load is complete. It's important that DMS starts CDC from an appropriate position so that no changes are missed or duplicated between the initial load and CDC processing.
+	- The key to choosing an appropriate position is to avoid a **gap**. During the full load, changes continue occurring. DMS needs to retain/process those changes and then apply them to the target in the **correct sequence**.
+	- Choosing the wrong CDC position could result in:
+		- **Missing changes** → target becomes inconsistent with source.
+		- **Duplicate changes** → the same logical change gets applied twice.
+	- This is another place where **idempotency and data validation** become important.
+
+## CDC Lag
+
+- Your migration has been running successfully:
+	- Full Load: Complete
+	- CDC: Running
+- However, you notice the following:
+	```
+	Source DB current position:  15:00
+	DMS CDC position:            14:20
+	```
+	- The gap continues increasing. The application is still actively writing to the source database.
+- What does this indicate, and what would you investigate to determine **why DMS is falling behind**?
+> 	DMS could be falling behind because it is not properly scaled and/or because RDS is not properly scaled. If DMS is not properly scaled, it won't be able to efficiently read the transaction logs and write the changes to RDS. If RDS is not properly scaled, it would act as a bottleneck for DMS even if it was processing events from the transaction log efficiently.
+	- If **DMS itself** can't keep up, the CDC position falls behind because DMS isn't reading/processing the source changes quickly enough.
+	- If **RDS** is the bottleneck, DMS may be reading changes efficiently but can't apply them to the target quickly enough.
+	- To determine where the bottleneck is, the following should be investigated:
+		- **DMS replication instance** → CPU, memory, storage, network utilization.
+		- **CDC source latency** → is DMS falling behind while reading PostgreSQL's transaction logs?
+		- **Target latency** → are changes piling up because RDS writes are slow?
+		- **RDS metrics** → CPU, I/O, connections, storage, and other signs of resource pressure.
+		- **DMS task metrics/logs** → errors, throughput, and CDC latency.
+	- Don't assume the replication service is the bottleneck just because replication is behind. Trace the entire pipeline to find where throughput is being constrained.
+
+## Data Validation
+
+- Suppose CDC has caught up and you're preparing to cutover the application:
+	```
+	Source → DMS → RDS
+	             ↓
+	        CDC lag ≈ 0
+	```
+- However, the migration team says: "DMS reports that the migration completed successfully, so we're ready to switch over."
+- Would you consider **zero CDC lag** sufficient evidence that the migration is correct? What kinds of validation would you perform before cutting over to RDS?
+> 	I would not consider zero CDC lag as sufficient evidence that the migration was successful. I would also confirm the data in both databases actually match by comparing row counts and checksums.
+	- Validation can occur at multiple levels, including:
+		- **Row counts** → catch missing or extra records.
+		- **Checksums/hashes** → detect differences in actual data.
+		- **Representative record comparisons** → verify important tables/records.
+		- **Schema validation** → confirm tables, columns, types, indexes, constraints, etc. are consistent where required.
+		- **Application-level validation** → ideally verify that the application can perform its critical operations correctly against RDS.
+
+## Schema Changes
+
+- Your production PostgreSQL database has 200+ tables. While the migration is running, developers occasionally make schema changes, such as:
+	- `ADD COLUMN`
+	- `ALTER COLUMN`
+	- `CREATE TABLE`
+	- `DROP COLUMN`
+- The target RDS database needs to remain compatible with these changes.
+- Why can **schema evolution** be challenging during a DMS migration? What would you want to consider when designing the migration so that a schema change doesn't cause the CDC process or target database to become inconsistent?
+> 	Schema evolution during a DMS migration can be challenging because certain schema changes can require a lot time and resources to properly execute, which could cause CDC lag to increase and cause the source and target databases to become inconsistent. Schema changes can also be challenging because you'd need to consider whether the change constitutes a breaking or non-breaking change. For example, dropping, renaming, or changing a column's data type could represent a breaking change, while adding an optional column would not necessarily represent a breaking change.
+	- Schema changes need to be coordinated between the source, DMS task, target schema, and **consuming application**.
+
+| Change                              | Potential impact     |
+| ----------------------------------- | -------------------- |
+| Add optional column                 | Usually non-breaking |
+| Add required column without default | Potentially breaking |
+| Rename column                       | Breaking             |
+| Drop column                         | Breaking             |
+| Change data type                    | Potentially breaking |
+
+# Lambda
+
+## Overview
+
+### Design Scenario
+- Your application allows users to upload profile pictures to S3. Whenever an image is uploaded, you need to:
+	1. Resize it.
+	2. Generate a thumbnail.
+	3. Store the results back in S3.
+- The workload is highly unpredictable:
+	- Normal: 5 images/sec
+	- Occasional Spikes: 5,000 images/sec
+- The processing of each image takes about 2 seconds.
+- **Would Lambda be a good fit?** Explain why or why not.
+	- Think about:
+		- Server management
+		- Scaling
+		- Workload predictability
+		- Processing duration
+		- Whether you need the compute resources running continuously
+> 	Lambda would be a good fit because the unpredictable nature of the workload would make server management, especially manually up and downscaling, very complicated and time consuming. Since each image only takes about 2 seconds to process, it would be unlikely for you to hit any performance limitations. Compute resources would only need to run while images are being processed and could automatically shut down after an appropriate idle period.
+			- Lambda provisions the execution environment as needed, so the application doesn't need to manage continuously running servers.
+			- The fact that each invocation only takes 2 seconds doesn't automatically mean the system can handle **5,000 images/sec**without constraints. Lambda also has **concurrency limitations**.
+			- For example, if you suddenly receive thousands of events, Lambda may need to execute thousands of concurrent invocations. If concurrency exceeds the applicable limit, requests can be throttled.
+			- Furthermore, the fact that Lambda can scale quickly doesn't matter if downstream dependencies can't handle the traffic spike.
+- Now suppose you have a nightly data-processing job. Every night:
+	```
+	S3
+	 ↓
+	Process 500 GB of data
+	 ↓
+	Transform
+	 ↓
+	Write results
+	```
+- The processing takes 45 minutes and the job only needs to run once a day.
+- **Would you use Lambda for this? If not, what characteristics of the workload make Lambda less attractive**?
+> 	I would only used Lambda if the data could be effectively partitioned and processed concurrently by multiple Lambdas. If this was not possible, Lambda would not be a good choice because of its 15-minute execution time limit.
+	- 500 GB is a substantial amount of data, so even if you _can_ partition it, Lambda may not be the best tool.
+	- We'd need to consider:
+		- Number of partitions/invocations
+		- Data movement
+		- Coordination between functions
+		- Memory and execution limits
+		- Cost
+		- Whether a distributed processing engine would be more efficient
+	- That's where something like **AWS Glue/Spark** can become a better fit.
+
+### Mental Model
+- That's where something like **AWS Glue/Spark** can become a better fit.
+- For example:
+	```
+	S3 upload | SQS message | API request
+	   ↓      |       ↓     |        ↓
+	Lambda    |    Lambda   |     Lambda
+	```
+- Be more cautious when you see:
+	- Hours of computation.
+	- Large-scale distributed processing.
+	- Long-running **stateful** workloads.
+	- Specialized compute requirements.
+
+## Lambda + SQS
+
+- Suppose we have:
+	```
+	Order Service
+	      ↓
+	     SQS
+	      ↓
+	   Lambda
+	```
+- The Lambda function processes each order. Suddenly, the queue receives 100,000 messages.
+- **Would you manually launch more Lambda instances to process the backlog? What potential problem could occur if Lambda scales up very aggressively and every invocation makes a request to DynamoDB**?
+> 	SQS can act as a durable storage layer for messages that are waiting to be processed as the Lambda function processes the load. You could horizontally scale to process messages in the queue more quickly, but only up to a certain point. Once the read/write capacity of the DynamoDB table is reached, it becomes a bottleneck.
+	- SQS absorbs the backlog; Lambda scales consumers to process it; DynamoDB ultimately limits how far you can scale.
+	- If 100,000 messages arrive, you don't need to provision 100,000 servers yourself. Lambda can **increase concurrency** to process the queue.
+	- Lambda concurrency is roughly the number of invocations executing simultaneously.
+	- Lambda can increase concurrency automatically, or you can manually control concurrency to avoid overwhelming downstream dependencies.
+- **Backpressure**:
+	- If the downstream system can't process work as quickly as Lambda can generate it, you need some mechanism to prevent the upstream system from overwhelming it.
+	- SQS naturally helps here because the backlog can remain in the queue. Instead of forcing Lambda to process everything immediately, you can deliberately limit concurrency and let SQS temporarily accumulate messages.
+	- The one major tradeoff is higher queue latency in exchange for protecting the downstream system.
+- As with any other SQS consumer, it's important to make Lambda invocation functions idempotent, incase the Lambda crashes after processing the message, but before deleting it.
+
+## Cold Starts & Provisioned Concurrency
+
+- Suppose you have an API backed by Lambda. Normally, it receives 100 requests/sec. Once every morning at 9:00 AM, traffic spikes to 20,000 requests/sec.
+- The API has a strict P99 latency SLA of 200 ms.
+- Some Lambda invocations experience significantly higher latency when a new execution environment needs to be initialized.
+- What could cause that additional latency, and how could you design the system to reduce it during the predictable 9 AM spike?
+> 	The additional latency could be associated with server startup time. This could be prevented by provisioning concurrency ahead of time, so that's fully prepared to absorb the traffic load.
+- When Lambda needs a new execution environment, there can be initialization overhead before your function actually starts processing the request. This is called the **cold start** problem.
+- Provisioning concurrency ahead of known traffic spikes helps avoid the cold start problem by allowing Lambda to initialize the execution environment before it's actually needed.
+- **Provisioned concurrency is not the same thing as increasing Lambda's concurrency limit**. They solve different problems.
+	- Concurrency Limit: How many executions am I allowed to run simultaneously?
+	- Provisioned Concurrency: How many execution environments should already be initialized and ready to respond?
+
+## Lambda Retries & Failure Handling
+
+- A Lambda function processes an SNS event. The function fails because a downstream API is temporarily unavailable.
+- **What should happen?** Should Lambda
+	- Immediately give up?
+	- Retry the invocation?
+	- Keep retrying forever?
+	- Put the failed event somewhere for later investigation?
+- **What would you need to consider to make sure retries don't create duplicate side effects**?
+> 	Lambda should retry an appropriate number of times before sending the message to a durable storage layer, such as a DLQ. To ensure retries don't produce duplicate effects, I'd ensure the processing logic in the invocation function is idempotent.
+- The exact retry/DLQ behavior depends on **what invokes Lambda**.
+- For example, Lambda's behavior differs between:
+	- SNS → Lambda
+	- SQS → Lambda
+	- EventBridge → Lambda
+	- Direct synchronous invocation
+- 
+
+## Summary
+
+| Concept                 | Key takeaway                                  |
+| ----------------------- | --------------------------------------------- |
+| Serverless              | No server management                          |
+| Short-lived workloads   | Good Lambda use case                          |
+| 15-minute limit         | Long-running work may need another solution   |
+| Concurrency             | Number of simultaneous executions             |
+| Downstream bottlenecks  | More Lambda ≠ unlimited scalability           |
+| SQS integration         | Queue absorbs backlog                         |
+| Idempotency             | Protect against duplicate processing          |
+| Visibility timeout      | Prevent premature redelivery                  |
+| Cold starts             | Initialization adds latency                   |
+| Provisioned Concurrency | Keep environments initialized ahead of demand |
+
+# Glue
+
+## Overview
+
+- The most important thing to understand about Glue is that it's primarily a **managed data integration / ETL service**. A common architecture looks like:
+	```
+	S3
+	 ↓
+	Glue Job
+	 ↓
+	Transform / Clean / Join
+	 ↓
+	S3 / Redshift / other destination
+	```
+- Glue is especially useful when you're dealing with **batch-oriented data processing at scale** and don't want to manage your own Spark cluster.
+- Under the hood, Glue ETL jobs commonly use **Apache Spark**.
+- **Scenario 1 - Small Dataset**:
+	- Imagine you have an ETL job that runs once a night:
+		```
+		S3
+		 ↓
+		5 GB of Parquet data
+		 ↓
+		Transform a few columns
+		 ↓
+		Write result to S3
+		```
+	- **Would you use AWS Glue for this? Why or why not**?
+> 	Although the dataset is 5GB, if the transformations that need to be run are fairly simple and can be processed very quickly, Lambda could be a good fit.
+		- The **5 GB size alone doesn't mean Glue is necessary**. The more important questions are:
+			- How complex is the transformation?
+			- How quickly does it need to run?
+			- Can it be handled by a single process?
+			- Is distributed processing actually providing value?
+			- What are the startup and compute costs?
+		- If the transformations are simple enough to process efficiently without distributed compute, Glue could be unnecessary overhead.
+		- Lambda _could_ be an option if the processing fits within Lambda's execution, memory, and other limits.
+		- **The decision to use Lambda shouldn't be based soley on "5GB is small."** Five GB of data could still justify distributed processing if, for example, the **transformation involves expensive joins or aggregations**.
+- **Scenario 2 - Large Dataset**:
+	- Now imagine **500 GB of Parquet data** stored in S3. Every night, you need to:
+		1. Read all 500 GB.
+		2. Join it with another **100 GB dataset**.
+		3. Perform several aggregations.
+		4. Remove invalid records.
+		5. Write the results back to S3 as **partitioned** parquet.
+	- The job currently takes about **20 minutes** when run on a Spark cluster.
+	- **Would you choose Lambda or Glue? What characteristics of this workload make one more appropriate than the other**?
+> 	The primary characteristics of the workload that make Glue a more appropriate choice than Lambda are the volume of data and complexity of transformations that need to be performed. Spark's distributed processing framework is well-suited for this kind of workload.
+
+### Glue Job
+- A Glue Job is the **compute** that actually performs ETL transformations.
+- For example:
+	```
+	S3
+	 ↓
+	Glue Job
+	 ↓
+	Transform
+	 ↓
+	S3
+	```
+- A Glue ETL job commonly runs on Spark code.
+
+### Glue Data Catalog
+- The Glue Data Catalog is the **metadata repository** describing your data.
+- For example:
+	```
+	Database: sales
+	
+	Table: orders
+	
+	Columns:
+	    order_id
+	    customer_id
+	    order_date
+	    amount
+	
+	Location:
+	    s3://bucket/orders/
+	```
+- The Catalog **doesn't contain** the actual 500 GB of data. It contains information **about** the data.
+
+### Glue Crawler
+- A crawler can inspect data sources and infer things such as:
+	- Schema
+	- Columns
+	- Data types
+	- Partitions
+- It can then populate/update the Glue Data Catalog.
+- Conceptually:
+	```
+	S3
+	 ↓
+	Crawler
+	 ↓
+	Glue Data Catalog
+	 ↓
+	Athena / Glue / other services
+	```
+- **Interview Scenario**:
+	- Suppose you have this S3 dataset:
+		```
+		s3://sales/orders/
+		    year=2025/
+		        month=01/
+		        month=02/
+		        ...
+		    year=2026/
+		        month=01/
+		        month=02/
+		        ...
+		```
+	- An analyst wants to query it using Athena.
+	- **What role could the Glue Data Catalog play here? What role would a Glue Crawler play**?
+> 	The Glue Crawler inspects the S3 dataset and produces metadata, which is stored in the Glue Data Catalog and used by Athena or other serves to query the data.
+
+## Glue Performance
+
+- Suppose you have a Glue Spark job processing **2 TB of Parquet data**. You look at the Spark UI and see:
+	```
+	Executor 1: ████████████████████ 95% CPU
+	Executor 2: ██                   10% CPU
+	Executor 3: ██                   8% CPU
+	Executor 4: █                    5% CPU
+	...
+	```
+- The job is taking much longer than expected.
+- **What does this pattern suggest to you? What would you investigate to determine why one executor is doing dramatically more work than the others**?
+> 	I would look to see how the data is partitioned and compare it to the data access patterns within the Glue Job. The fact that one executor is performing significantly more work than the others suggests a hot partition.
+	- The key issue isn't necessarily that you don't have enough executors. You may have plenty of compute available, but **the work isn't distributed evenly across them**.
+	- What to investigate:
+		- How the data is partitioned.
+		- The distribution of records across partitions.
+		- The partition key and its cardinality.
+		- Whether one or a few key values account for a disproportionate amount of the data.
+		- Whether a particular join or aggregation is causing the skew.
+- Now suppose the Spark UI instead shows:
+	```
+	Executor 1: ████████████████ 90%
+		Executor 2: ████████████████ 92%
+	Executor 3: ████████████████ 89%
+	Executor 4: ████████████████ 91%
+	...
+	Executor 50: ███████████████  88%
+	```
+- **What does this suggest? Would you investigate data skew, or would you start looking somewhere else**?
+> 	This suggests the data load is evenly distributed, but nearing the performance limitations of the current Spark cluster. Before scaling, I'd look at the Spark UI to try and identify the bottleneck, then consider optimizations such as filtering before aggregations or performing broadcast joins for relatively small tables.
+	- If every executor is similarly busy, **data skew is much less likely**. The cluster is actually receiving work fairly evenly, so I'd investigate whether the workload itself is computationally expensive or whether there are Spark-level inefficiencies.
+	- Troubleshooting sequence:
+		- **Inspect the Spark UI** to identify where the time is being spent.
+		- Look for expensive stages, excessive shuffling, large joins, etc.
+		- Optimize the job before simply throwing more compute at it.
+		- Scale the cluster if the workload genuinely requires more resources.
+- Now imagine your Glue Job processes **1 TB of data** stored in S3. The job is taking much longer than expected.
+- You inspect the S3 layout and discover that there are 1,000,000 files with an average size of 1 MB. The actual amount of data is not particularly large for the Spark cluster, and the transformations themselves are straightforward.
+- **What problem does this S3 layout create? What would you do to improve the performance of the Glue job**?
+> 	This S3 layout creates the small files problem, where Spark expends more resources scheduling and orchestrating tasks than actually performing tasks. Improving the performance of the Glue job could involve repartitioning the data so that it is spread across fewer files, or compacting the files if the partitioning strategy can't be changed.
+	- The two core solutions are correct:
+		- **Repartition** the data when you have control over how the output is written.
+		- **Compact existing files** when the underlying partitioning strategy is otherwise appropriate.
+	- The goal is generally to have **reasonably sized files** rather than either too many small files or too few large files. Too many small files creates excessive metadata and scheduling overhead, while too few files leads to insufficient parallelism.
+
+### Worker Sizing
+- Let's say you've optimized the job:
+	- No major data skew
+	- No small-files problem
+	- Filters are pushed early
+	- Appropriate broadcast joins are being used
+	- The workload is still legitimately compute-intensive
+- Your Glue job is currently configured with **10 workers**, and the job takes 60 minutes.
+- You increase it to **20 workers**, and the job takes 32 minutes.
+- You increase it to **40 workers**, and it takes 18 minutes.
+- You increase it to **80 workers**, and it takes 17 minutes.
+- **What does this tell you? Would you continue increasing the number of workers? might doubling the compute resources eventually produce little or no additional performance improvement**?
+> 	This tells me that the job is benefiting from increased parallelism associated with a larger cluster size, up to a certain point. The trend shows diminishing returns, where doubling cluster size the first time cuts execution time by almost 30 minutes, while doubling it a second time only reduces execution time by less than 15 minutes. Continuing this trend indefinitely would result in very few tasks being assigned to each worker, meaning individual workers would be underutilized during the execution of the job.
+
+## Glue vs. Lambda
+
+- **Lambda**: Best suited for:
+	- Short-lived processing
+	- Event-driven workloads
+	- Small/independently processable units of work
+	- Highly variable workloads
+- **Glue**: Best suited for:
+	- Large datasets
+	- Batch ETL
+	- Complex transformations
+	- Joins and aggregations
+	- Distributed Spark processing
+
+## Glue vs. Athena
+
+- Imagine you have data in S3:
+	```
+	S3
+	 ↓
+	Parquet
+	 ↓
+	Several TB
+	```
+- An analyst asks: "Give me the total sales for each month in 2026."
+- There is **no need to transform or persist the data**. They simply need to query it.
+- **Would you use a Glue Job or Athena**?
+> 	Since there is no need to transform the data and it is already stored in Parquet format, Athena would be appropriate since it is designed for querying processed data, while Glue is designed to transform unprocessed data.
+	- Glue can absolutely transform **already processed/structured data**.
+	- A more precise distinction is that Glue is primarily for **data integration and transformation**, while Athena is primarily for **interactive SQL querying** of data stored in S3.
+- Now imagine you have **10 TB of Parquet data** in S3. An analyst runs:
+	```sql
+	SELECT
+	    customer_id,
+	    SUM(amount)
+	FROM sales
+	WHERE year = 2026
+	GROUP BY customer_id;
+	```
+- The table contains data from **2018 through 2026**, and the data is physically partitioned by `year` and `month`.
+- **What could you do to make this Athena query more efficient and reduce the amount of data Athena needs to scan**?
+> 	If analysts commonly filter by year instead of month, query performance could be improved by partitioning the data by year.
+	- In this case, the data is **already partitioned** by `year`, so Athena would use **partition pruning** to avoid scanning irrelevant partitions.
+- Now, suppose the `sales` table has **100 columns**, but the analyst only needs `customer_id`, `amount`, and `year`.
+- Athena is querying **Parquet** files.
+- **Why does using Parquet help Athena here, and why would this query generally be more efficient than querying the same data stored as CSV**?
+> 	Unlike CSV, Parquet is column-based storage format, meaning only the specific columns being queried need to be scanned during execution.
+	- Partition pruning and column pruning work together to reduce the amount of data that needs to be scanned when data is stored in Parquet format.
+	- Parquet also supports **compression and efficient encoding**, which can further reduce the amount of data Athena needs to read.
+- Finally, suppose you have a **5 TB events dataset** in S3.
+- The current S3 storage layout stores all 1,000,000 small **CSV** files under one `events` partition.
+- Analysts primarily query by `event_date` and `application_name`. The queries are becoming expensive and slow.
+- **If you were responsible for improving this data platform, what changes would you consider to the storage layout and query architecture**?
+> 	Since the queries are becoming slow and expensive with the data stored in CSV format, I'd consider switching to Parquet format, as well as partitioning the data based on application_name and event_date, given that is primarily how analysts filter the data when performing queries. Using this partitioning data allows unrelated data to be skipped while scanning data. Parquet also offers efficient compression and encoding, further reducing the amount of data that needs to be scanned.
+	- Also mention **file compaction**. You don't want to simply convert 1,000,000 CSV files to 1,000,000 Parquet files.
+	- You might not want to consider partitioning by `application_name`, depending on the cardinality of the column and how evenly it would distribute data across partitions.
+
+# Athena
+
+## Overview
+
+- Athena is a serverless **query engine** that lets you run SQL directly against data stored in S3. You don't need to load the data into a database first.
+- Athena is particularly useful when:
+	- Data is already in **S3**
+	- Query volume is relatively **low or unpredictable**
+	- You don't need a **continuously running** database
+	- You want minimal infrastructure management
+	- You're primarily performing **analytical** queries
+- **Parquet and partitioning can dramatically reduce the amount of data Athena needs to scan**.
+
+## Athena vs. Redshift
+
+- Your company has:
+	- **10 TB of historical event data**
+	- Data already stored in **Parquet on S3**
+	- Analysts run approximately **10 moderately complex queries per day**
+	- Queries don't require extremely low latency
+	- Query demand may increase somewhat in the future
+- Would you initially choose **Athena or Redshift**? What factors would you consider before deciding that Redshift is worth introducing?
+> 	I would likely choose Athena because the data is already stored in S3 in Parquet format. Assuming the data is effectively partitioned, this would help reduce the amount of data Athena is required to scan during a query. Furthermore, the queries are moderately complex and don't require extremely low latency. The somewhat unpredictable nature of query demand also makes Athena a better fit.
+	- **Data is already in S3** → Athena can query it directly.
+	- **Parquet** → column pruning and compression can reduce scanned data.
+	- **Effective partitioning** → partition pruning can further reduce the scan.
+	- **Moderate query complexity** → Athena is capable of handling it.
+	- **No strict low-latency requirement** → there's less justification for a dedicated warehouse.
+	- **Unpredictable demand** → Athena's serverless, pay-per-query model can be attractive.
+- Key Principle: Don't introduce a continuously running analytical warehouse unless the workload actually benefits enough from its performance to justify the additional cost and operational considerations.
+
+## Query Cost
+
+- Imagine you have a **5 TB Parquet dataset** in S3. The data is partitioned by year, month, and day. An analyst runs this query:
+	```sql
+	SELECT customer_id, COUNT(*)
+	FROM events
+	WHERE year = 2026
+	GROUP BY customer_id;
+	```
+- Why would the partitioning strategy significantly affect the cost and performance of this Athena query? And what would happen if the data **wasn't partitioned at all**?
+> 	The partitioning strategy affects query cost and performance because it determines how much data needs to be scanned in order to execute the query. If the data wasn't partitioned at all, Athena would need to query a much larger portion of the data.
+	- Because the query filters on `year = 2026`, Athena can skip the partitions for other years instead of scanning the entire dataset.
+	- That improves both **query performance and cost**, because Athena's pricing is based largely on the **amount of data scanned**.
+	- Without partitioning, Athena would have to scan the **relevant columns** across the much larger dataset to determine which rows satisfy `year = 2026`.
+	- Partitioning eliminates entire partitions from the scan, while Parquet columnar storage eliminates unnecessary columns from the scan.
+
+## Partition Design
+
+- Suppose you have **10 TB of event data** with these columns:
+	- `event_date`
+	- `application_name`
+	- `user_id`
+	- `event_type`
+	- `region`
+	- `payload`
+- Analysts commonly run queries such as:
+	```sql
+	WHERE event_date BETWEEN ...
+	  AND application_name = ...
+	```
+	- `region` is only occasionally used as a filter. You need to decide how to partition the data.
+- What partitioning strategy would you choose, and why? What problem could arise if you partitioned by **`user_id`** instead?
+> 	I would partition by event_date and application_name because this is the most common query pattern. Partitioning by user_id could create an excessive amount of small partitions, leading to an excessive amount of scanning and metadata overhead.
+	- Small partitions don't necessarily lead to "excessive scanning." The bigger concern is the **small-files / partition-overhead problem** and the possibility that the partition layout doesn't provide enough benefit relative to its management cost.
+
+## Parquet vs. Partitioning
+
+- Suppose your data looks like:
+	```
+	10 TB total
+	↓
+	Partitioned by event_date
+	↓
+	Stored as Parquet
+	```
+- An analyst typically runs:
+	```sql
+	SELECT user_id
+	FROM events
+	WHERE event_date = '2026-08-27';
+	```
+- Explain **two different ways** the combination of partitioning and Parquet makes this query more efficient.
+> 	Partition pruning eliminates scanning event_date partitions that are irrelevant to the query. Column pruning eliminates scanning irrelevant columns within a partition. Storing files in Parquet format, combined with an appropriate partitioning strategy based on common access patterns reduces the amount of irrelevant data scanned during query execution.
+- **Scenario: Partitioning Gone Wrong**:
+	- Suppose you have a dataset:
+		```
+		S3
+		└── events/
+		    ├── application_name=A/
+		    │   ├── year=2026/
+		    │   │   ├── month=01/
+		    │   │   │   ├── day=01/
+		    │   │   │   │   ├── file1.parquet
+		    │   │   │   │   ├── file2.parquet
+		    │   │   │   │   ├── file3.parquet
+		    │   │   │   │   └── ...
+		```
+	- After several months, the data lake contains **millions of very small Parquet files**.
+	- Analysts complain that Athena queries are becoming slower even though they're scanning relatively little data.
+- Why could having millions of small Parquet files hurt Athena query performance? What would you consider doing to improve the situation?
+> 	Having millions of small Parquet files hurts query performance because there are costs associated with opening and closing each file while scanning relevant data. Small partitions also create a lot of metadata. To mitigate these issues, I'd either consider changing the partitioning strategy or compacting files to produce more appropriately-sized files.
+	- **File-management overhead:** Athena/Spark has to deal with many individual files, so the overhead of opening, scheduling, and coordinating them can become significant relative to the amount of actual data being processed.
+	- **Metadata overhead:** Millions of files create substantially more metadata to manage and inspect. This metadata needs to be inspected when producing the query's execution plan.
+	- Compact the existing files into fewer, appropriately sized Parquet files would be a more effective, immediately solution than repartitioning.
+	- After compacting, The pipeline should be inspected to determine why it is producing so many small files in the first place. If the partitioning strategy is causing it, redesigning the partitioning scheme could help, so future writes produce healthier file sizes.
+
+## Query Optimization
+
+- An analyst tells you: "This Athena query used to take 10 seconds, but now it takes 3 minutes." The query scans data from S3 and hasn't changed.
+- Walk me through how you would investigate why the Athena query became slower.
+> 	I'd investigate how the data is stored first. If the data is stored as JSON or CSV instead of Parquet, I'd consider switching to Parquet if visual inspection wasn't a major requirement. This would allow for optimizations such as column pruning and predicate pushdown. Next, I'd look at the partitioning strategy and compare it against the query's access pattern. If the two are misaligned, I'd consider changing the partitioning strategy or asking the analyst if their query could be modified to match the existing pattern. This would allow for better partition pruning. I'd also look at the query's execution plan to see if the query could be optimized in any way, such as filtering early. Next, I'd look at file sizes. If each partition contains an excessive number of small files, I'd consider compaction as a solution.
+	- **Predicate pushdown** is more accurately associated with the storage engine/file format being able to avoid reading rows that don't satisfy predicates; **partition pruning** is what skips entire partitions.
+- **Scenario: Cost Explosion**:
+	- Your company has an Athena query that analysts run regularly.
+	- Yestarday:
+		- Dats Scanned: 200 GB
+		- Cost: low
+		- Runtime: 15 seconds
+	- Today:
+		- Data Scanned: 4 TB
+		- Cost: significantly higher
+		- Runtime: 4 minutes
+	- The SQL query hasn't changed. Yesterday's query contained: `WHERE event_date = '2026-08-26'`, but today's version doesn't include the `event_date` filter.
+- Why would removing that filter have such a dramatic effect on both **cost and performance**, and what Athena/S3 design principle does this demonstrate?
+> 	Removing the filter would have a dramatic effect on query cost and performance because it effectively eliminates the benefit of partition pruning, assuming there aren't any other filters in the query. This demonstrates the need to align S3 partitioning strategy with access patterns used in Athena.
+	- Partitioning only provides a major benefit when queries **actually filter on the partition columns**.
+	- When designing an S3 data lake for Athena, you need to consider **how analysts will actually query the data**, not just how the data happens to be structured.
+
+## Athena vs. Glue
+
+- You have raw data arriving in S3:
+	```
+	CSV files
+	  ↓
+	Need to:
+	- clean malformed records
+	- join with customer data
+	- aggregate transactions
+	- convert to Parquet
+	  ↓
+	S3
+	  ↓
+	Athena
+	```
+- Why would you use **Glue before Athena** here rather than having Athena perform all of the work directly? What role would Athena play **after** the Glue job completes?
+> 	You would use Glue before Athena because the required transformations are fairly complex. Glue primarily uses Spark under the hood to perform data transformations. Taking advantage of Spark's distributed processing framework would allow the transformations to be executed much more effectively than using SQL statements. After Glue transforms the raw CSV data and coverts it to Parquet format, Athena would simply act as a query engine. Glue can also scan the processed data and provide metadata that would help Athena optimize queries.
+	- **Glue is doing the transformation work**, while **Athena is doing the interactive querying**.
+	- Glue Data Catalog provides metadata about the data that Athena can use to **understand and query** the datasets.
+	- The catalog itself doesn't necessarily "optimize" Athena's queries; **partitioning, columnar formats, and query predicates** are what provide the major scan optimizations.
+
+# Step Functions
+
+## Overview
+
+- The simplest way to think about Step Functions is that it is a tool used to orchestrate workflows made up of multiple steps.
+- Suppose order processing involves:
+	```
+	Validate Order
+	      ↓
+	Charge Payment
+	      ↓
+	Reserve Inventory
+	      ↓
+	Create Shipment
+	      ↓
+	Send Confirmation
+	```
+- You *could* put all of the logic into a Lambda Function:
+	```
+	Order Lambda
+	 ├─ Validate
+	 ├─ Charge
+	 ├─ Reserve
+	 ├─ Ship
+	 └─ Notify
+	```
+	- This creates a large, tightly-coupled function.
+- Instead, Step Functions can orchestrate separate, independent components:
+	```
+	             Step Functions
+	                   │
+	        ┌──────────┼──────────┐
+	        ↓          ↓          ↓
+	    Validate    Payment    Inventory
+	        ↓          ↓          ↓
+	              Shipment
+	                   ↓
+	              Notification
+	```
+- The state machine keeps track of **where the workflow is**, allowing individual steps to succeed, fail, retry, or branch independently.
+- **Scenario**: You're building a data pipeline:
+	1. Extract data from API
+	2. Validate the data
+	3. Transform the data
+	4. Load it into Redshift
+	5. Send a notification when complete
+- The transformation step fails occasionally because the external API sometimes returns malformed records.
+- **Why might Step Functions be preferable to putting the entire workflow into a single Lambda function**?
+> 	Step Functions would be preferable to a single Lambda function because each step can be turned into a task, where each task is a part of a larger workflow. This makes failure isolation and retries significantly easier to manage. When one step fails, you know exactly which one failed. Retrying the step doesn't involve retrying any of the other steps, avoiding unnecessary repeated work. Lambda functions also offer automatic retries, but the entire workflow would need to be retried, which would be especially wasteful if only the last step failed.
+	- When a Lambda function is retried, the entire workflow isn't necessarily retried. It depends on the Lambda's invocation source.
+
+## Sequential vs. Parallel Work
+
+- Step Functions becomes particularly useful when a workflow isn't simply a straight line.
+- Suppose you're validating an order. You need to:
+	```
+	             Validate
+	                ↓
+	        ┌───────┴───────┐
+	        ↓               ↓
+	   Charge Payment   Reserve Inventory
+	        ↓               ↓
+	        └───────┬───────┘
+	                ↓
+	          Create Shipment
+	```
+- Payment and inventory reservation don't depend on each other, so they can potentially happen **in parallel**. Step Functions supports this kind of branching.
+- **Why might running these two tasks in parallel be preferable to running them sequentially? What would you need to consider before deciding that the two operations are safe to execute concurrently**?
+> 	Running the two tasks in parallel is preferable to running them sequentially because concurrent execution is faster. Before deciding if concurrent execution is appropriate, you'd need to evaluate dependency between the tasks and whether they use shared resources.
+	- Dependencies: If inventory reservation requires successful payment authorization, you can't safely run them independently.
+	- Shared Resources / Concurrency: If both operations modify the same resource, concurrent execution could introduce race conditions or inconsistent state.
+	- Failure Semantics: You also need to consider what happens if one succeeds and the other fails. For example, if `Charge Payment` succeeds, but `Reserve Inventory` fails, there would need to be a way to identify and correct the inconsistent state. This is why **error handling and retries** are important considerations when designing a Step Functions workflow.
+
+## Retry vs. Catch
+
+- Suppose your workflow looks like:
+	```
+	Validate
+	   ↓
+	Charge Payment
+	   ↓
+	Reserve Inventory
+	   ↓
+	Create Shipment
+	```
+	- The `Reserve Inventory` task occasionally fails because DynamoDB experiences a temporary throttling event.
+	- You **don't** want the entire workflow to fail immediately. A **transient failure** may succeed a few seconds later.
+- **How would you design the Step Function to handle this**?
+> 	I would design the Step Function to retry the task an appropriate number of times. I'd also ensure the task itself is idempotent so that inventory can't be reserved more than once for the same order. After a set amount of retries, the failure can be assumed permanent rather than transient. Once the task has permanently failed, it should trigger a separate task that issues a refund.
+	- The configuration of the retry policy is also important. Ideally, you'd use **exponential backoff** to avoid overwhelming a downstream service.
+	- You can't necessarily roll back a payment and inventory reservation as one atomic transaction across independent services, you may need to perform a compensating operation when a later step fails.
+
+## Step Functions vs. SQS
+
+- Suppose you have an image-processing system:
+	```
+	Upload Image
+	     ↓
+	Process Image
+	     ↓
+	Generate Thumbnail
+	     ↓
+	Extract Metadata
+	     ↓
+	Notify User
+	```
+	- You have **millions of images**, and each image can be processed independently.
+- **Would you use **Step Functions**, **SQS**, or potentially both**? Explain what role each service would play and why.
+> 	I would use SQS as a durable storage location for image processing requests and Step Functions as an orchestration layer that executes independent tasks in parallel. Requests for workflows that failed could be sent to a DLQ so they can be inspected and retried.
+	- Step Functions is appropriate when you actually have a **workflow with multiple dependent or coordinated steps**. It can orchestrate those operations, including retries, branching, parallel execution, and compensation.
+	- Step Functions **isn't primarily a replacement for a queue** when you have millions of independent jobs. If every image is completely independent, SQS + workers/Lambda may be sufficient.
+	- You'd only introduce Step Functions when **each image has a multi-step workflow that needs orchestration**.
+
+## Step Functions vs. SNS
+
+- **Scenario**: Suppose an order is successfully created. Three independent services need to know about:
+	- Inventory
+	- Email
+	- Analytics
+- The services don't need to execute in a particular order, and the order service shouldn't need to know about each downstream service.
+- **Would you use Step Functions or SNS here? Why**?
+> 	Since each service is independent and doesn't require orchestration, I'd use SNS. If message durability was a concern, I'd use an SNS + SQS fanout pattern so that each queue holds copies of the same messages so that they can be independently consumed by each downstream service.
+	- Each downstream service gets its **own queue**, so it can:
+		- Process messages independently
+		- Consume at its own rate
+		- Retry failures independently
+		- Retain messages while temporarily offline
+		- Use a DLQ for repeatedly failing messages
+	- Most importantly, the Order service **doesn't need to know that these three consumers exist**.
+	- Step Functions would be more appropriate if the **order itself had a workflow** with dependencies:
+		- First, Validate Order
+		- Then, Charge Payment
+		- Then, Reserve Inventory
+		- Finally, Create Shipment
+	- That's an **orchestration**. SNS serves as an **event distribution** layer.
+- **Mental Model**:
+	- SNS: "Who needs to know about this event?"
+	- Step Functions: "What steps need to happen, and in what order?"
+
+## Step Functions vs. SNS vs. SQS
+
+- **Scenario 1**: You have an order-processing system:
+	- Requirement 1: When an order is created, **Inventory, Analytics, and Email** all need to receive an `OrderCreated` event.
+	- Requirement 2: The inventory workflow is:
+		1. Reserve Inventory
+		2. Charge Payment
+		3. Create Shipment
+		- Payment **should only occur** if inventory reservation succeeds.
+	- Requirement 3: The Analytics service may be offline for several hours and **must not lose events**.
+	- Requirement 4: The Email service can process messages much more slowly than the other consumers.
+- **Design the AWS messaging/orchestration architecture. Which of SNS, SQS, and Step Functions would you use, where would you use them, and why**?
+> 	I would use an SNS + SQS fanout pattern. SQS queues would feed the Analytics and Email services since they operate independently. Retention policies for these queues would need to be set appropriately, according to service reliability and processing speed. Another SQS queue would feed a Step Functions workflow that orchestrates inventory reservation, payment, and shipment creation. Inventory reservation and payment would be setup to run sequentially, with payment depending on inventory reservation. Shipment creation could occur in parallel. If the sequential portion of the workflow fails, the shipment would be cancelled.
+	- The first part is right:
+		- **SNS** handles the one-to-many fanout.
+		- **Separate SQS queues** give Analytics and Email independent buffering and consumption.
+		- Analytics can be offline for hours because its queue retains the events.
+		- Email can process slowly without blocking Analytics or Inventory.
+	- Since the first two parts of the inventory workflow must be coordinated, it makes sense to only create the shipment once those two parts succeed together. It shouldn't be run in parallel.
+	- You don't necessarily need an SQS queue in front of the Step Functions workflow. SQS is providing durable asynchronous buffering; Step Functions is orchestrating the multi-step order workflow. Don't add an SQS queue merely because Step Functions exists. Add it when you actually need **buffering, backpressure, independent consumption, or retry isolation**.
+
+# Identity and Access Management (IAM)
+
+## Overview
+
+- You have a Lambda function that processes files from `s3://customer-data/`.
+- The Lambda only needs to:
+	- Read objects from `customer-data/incoming/`
+	- Write processed objects to `customer-data/processed/`
+- It does **not** need to:
+	- Delete objects
+	- Access other S3 buckets
+	- Modify bucket configuration
+	- Read objects from `customer-data/archive/`
+- **How would you design the Lambda's IAM permissions? What does least privilege mean in this scenario**?
+> 	I would design the Lambda's permissions policy such that it grants access to the specific S3 prefixes needed to read and write objects and only has permission to perform the needed actions on those buckets. For example, the function would only be given read permission to customer-data/incoming/ and write permission to customer-data/processed. It would not be given read and write permission to both buckets.
+	- Designing a permissions policy using the principle of least privilege reduces the potential impact if the Lambda is compromised or contains a bug.
+	- `customer-data/incoming/` and `customer-data/processed/` are S3 **prefixes**, not buckets. Be careful not to mix the two up during an interview.
+
+## Identity-Based vs. Resource-Based Policies
+
+- **Scenario**: Suppose you have Account A, which contains a Lambda function, and Account B, which contains an S3 bucket. The Lambda in **Account A** needs to read objects from an S3 bucket owned by **Account B**.
+- **What additional IAM consideration does this introduce? Specifically, is giving the Lambda's execution role `s3:GetObject` permission necessarily enough for the cross-account access to work**?
+> 	Since the two resources exist in different accounts, A resource-based policy must be created in Account B with the necessary S3 permissions and attached to an IAM role. Additionally, a trust policy must be created, granting the Lambda permission to assume that role. Giving Lambda's execution role s3:GetObject permission isn't enough for the cross-account access to work.
+	- Instead of creating a trust policy, S3 supports a **bucket policy**, which can directly grant the Lambda's execution role permission to access objects in the bucket owned by Account B.
+	- Using a bucket policy instead of a trust policy means the Lambda doesn't need to assume another role.
+	- The configuration would look like:
+		- Lambda's execution role → has the appropriate identity-based permissions.
+		- Account B's S3 bucket policy → allows that role from Account A to access the specified objects.
+	- Using a trust policy instead of a bucket policy would mean the Lambda would need to actually assume the role it's being granted permission to assume. In the two possible options, the bucket policy is a resource-based policy, while the trust policy is an identity-based policy.
+	- **Important Takeaway**: **Resource-based policies**, such as an S3 bucket policy is attached to the **resource**, not the role.
+- **Bucket Policy vs. IAM Policy**:
+	- **Scope:** IAM policies control what an identity can access across multiple AWS services. Bucket policies control who can access one specific S3 bucket and its contents (what it can do with the bucket).
+	- **Principal Element:** IAM policies do not need a `Principal` field because the user or role is already the target. Bucket policies must define a `Principal` to specify who gets access.
+	- **Cross-Account Access:** Bucket policies are **mandatory** to allow external AWS accounts to access your S3 data.
+	- How They Work Together:
+		- **Same-Account Requests:** Access is granted if **either** the IAM policy or the bucket policy allows it (as long as there is no explicit deny).
+		- **Cross-Account Requests:** Access requires an explicit **allow from both** the bucket policy in the resource account and the IAM policy in the client account.
+		- **Deny Wins:** An explicit `Deny` in either policy blocks the request completely.
+
+## Assigning Roles
+
+- **Scenario**: You have a developer who needs to deploy a Lambda function.
+	- The Lambda needs an execution role that allows it to:
+		- Read from S3
+		- Write to DynamoDB
+		- Publish to SNS
+	- The developer should be able to deploy and update the Lambda, but **should not be able to give the Lambda an arbitrary administrator role**.
+	- **What IAM permission would you use to control which execution roles the developer is allowed to assign to the Lambda? Why is this important from a least-privilege perspective**?
+> 	The `aim:PassRole` permission grants the ability to assign roles to IAM principals. This is important for least-privilege access because you don't want users bypassing restrictions set by IAM policies by granting themselves or each other permissions they don't need or shouldn't have.
+		- The key security issue is that **creating/updating a Lambda isn't inherently dangerous if the developer can only attach approved execution roles**. Without `iam:PassRole` restrictions, someone could potentially deploy a Lambda with a highly privileged role and effectively turn that Lambda into a way to access resources they shouldn't have access to.
+		- `iam:PassRole` controls which IAM roles a principal can assign to an AWS service such as Lambda. The developer's `iam:PassRole` permission should be restricted to only the approved Lambda execution roles. This prevents the developer from bypassing least-privilege controls by deploying a service with a more privileged role.
+
+## IAM User vs. IAM Role
+
+- **Scenario**: Suppose a developer needs to deploy infrastructure to AWS from their laptop. You have two possible approaches:
+	- **Option A**: Create an IAM user with a permanent access key and secret access key. This gives the developer permanent credentials.
+	- **Option B**: Use temporary credentials obtained through an IAM role. When the developer **assumes** the role, they are granted **temporary** permissions associated with the role.
+- **Which approach would you prefer, and why are IAM roles with temporary credentials generally considered safer than long-lived access keys**?
+> 	I would prefer assigning temporary credentials. This is generally considered safer than long-lived access keys because temporary credentials don't require long-term management. They don't need to be modified or deleted when a developer switches teams or leaves the company. Additionally, long-lived access keys pose a greater security threat when leaked than temporary credentials that can only be used once.
+	- Temporary credentials still need to be managed. More precisely, temporary credentials **expire automatically**, so you don't have to manually rotate/delete a permanent credential when someone's access changes.
+	- Temporary credentials **aren't necessarily single-use**. Instead, they're valid for a **limited period of time** and can be used during that period.
+	- Temporary credentials also provide better centralized control because access is governed by the role and its policies.
+
+# Key Management Service (KMS)
+
+## Overview
+
+- AWS KMS is primarily a service for **creating and managing encryption keys** and controlling who can use those keys.
+- Think about an S3 bucket containing sensitive customer data. The important distinction is that KMS **isn't generally where you store the encrypted data**. Instead, AWS services such as S3, DynamoDB, and EBS can use KMS keys to perform encryption operations.
+- **Scenario**: You have an S3 bucket containing customer data. Your security requirements state:
+	- Data must be encrypted **at rest**.
+	- Only a specific application should be able to decrypt it.
+	- Developers should not automatically have access to the decrypted data.
+	- Access to the encryption key should be auditable.
+- **Why might you use KMS rather than having the application generate and manage its own encryption keys**?
+> 	It would be better to abstract encryption key management to a separate service, such as KMS. The application should only need to worry about doing what it was designed to do. KMS natively integrates with S3, offering encryption at rest. KMS keys can be managed with key policies, which outline which entities are allowed to use a given key and what they're allowed to do with it. KMS also integrates with CloudTrail, allowing key owners to audit key access.
+	- Key Points:
+		- **Separation of responsibilities:** the application doesn't need to implement and maintain its own key-management system.
+		- **AWS integration:** KMS integrates directly with services such as S3 for encryption at rest.
+		- **Access control:** KMS key policies determine who can perform operations such as using or managing a key.
+		- **Auditing:** KMS API activity can be recorded through CloudTrail.
+	- KMS doesn't mean developers can never access decrypted data. **Access to the key and access to the underlying data are separate authorization decisions**.
+
+## Symmetric vs. Asymmetric Keys
+
+- For most AWS data-at-rest encryption use cases, you'll encounter **symmetric KMS keys**.
+- A symmetric key conceptually looks like:
+	```
+	Plaintext
+	   ↓
+	Encryption key
+	   ↓
+	Ciphertext
+	```
+	- The same underlying key is used for **encryption and decryption**.
+- Asymmetric cryptography uses **key pairs**. A public key encrypts data, while a private key decrypts it. This is useful for certain scenarios involving public/private key cryptography and digital signatures, but it isn't generally what you'd use to encrypt large amounts of S3 data.
+- **Scenario**: Your application needs to encrypt **10 GB of customer data** before storing it in S3.
+- **Would you have the application send all 10 GB directly through KMS to perform encryption? Or would you use a different approach**?
+> 	I would configure the S3 bucket to use KMS to encrypt data at rest as it is uploaded to the bucket, instead of encrypting the data directly through KMS.
+	- You generally **don't send the 10 GB payload to KMS for encryption**. Instead, you configure S3 to use a KMS key for server-side encryption.
+
+## Evelope Encryption
+
+- The basic idea is that KMS manages a **key-encryption key (KEK)**, while the actual data is encrypted using a separate **data encryption key (DEK)**.
+- Conceptually:
+	```
+	                 KMS
+	                  │
+	             Master/KEK
+	                  │
+	                  ↓
+	             Encrypts DEK
+	                  │
+	                  ↓
+	Application/S3 ──→ DEK ──→ Encrypts data
+	                            │
+	                            ↓
+	                         Ciphertext
+	```
+	- This allows the large amount of data to be encrypted using a symmetric data key rather than repeatedly sending the entire dataset through KMS.
+- **Why is envelope encryption more practical than using a KMS key to directly encrypt every byte of a large dataset**?
+> 	By allowing the encrypting a DEK once and allowing it to be used to perform the encryption, KMS only needs to worry managing data encryption keys. It doesn't need to worry about actually encrypting the data. This improves scalability, as KMS doesn't need to be called to encrypt every piece of data.
+	- KMS doesn't actually "manage the data encryption keys" in the sense of performing all DEK operations itself. The **DEK handles the bulk data encryption**, while KMS protects/manages the higher-level key material.
+	- Improved Answer:
+		- Envelope encryption improves scalability because the data encryption key performs the actual encryption of the data, while KMS is used to protect the data encryption key. This means the large payload doesn't need to be sent through KMS for every encryption operation, reducing KMS overhead and allowing the system to efficiently encrypt large amounts of data.
+- `kms:encrypt` / `kms:decrypt` grants an application permission to call KMS to perform data encryption / decryption on its behalf. Only 4 KB of data can be encrypted / decrypted per API call.
+- `kms:GenerateDataKey` grants an application permission to perform **envelop encryption** to encrypt **large amounts of data** locally before sending it to storage.
+	- When You Need It:
+		- **Encrypting local data:** When your application needs a plaintext data key to encrypt files, database records, or objects locally (such as before uploading them to Amazon S3 or DynamoDB).
+		- **Writing data to AWS services:** When custom applications or AWS services (like SQS, Step Functions, or custom data stores) need to generate a new data key to protect data at rest using a **customer-managed** KMS key.
+		- **Performing client-side encryption:** When your code calls the AWS SDK to request a unique data key, it receives both a plaintext and an encrypted copy from KMS, uses the plaintext copy to lock the data, and then discards the plaintext copy. **The encrypted copy of the data key must be stored directly alongside the encrypted data**.
+			- KMS does not store or keep track of the data keys it generates for you, this encrypted key is your only way to decrypt the data later.
+- Encrypted Data Key Lifecycle:
+	1. **Packaging:** Your application packages the encrypted data key and the encrypted payload together into a single file or database entry.
+	2. **Storage:** You upload this package to your storage layer (like Amazon S3, DynamoDB, or a local hard drive).
+	3. **Metadata Attachment:** In services like Amazon S3, this encrypted key is often stored in the object's **metadata fields** or headers.
+	4. **Retrieve:** Your application reads the file and pulls out the encrypted data key.
+	5. **Decrypt Key:** Your application sends _only_ that encrypted data key back to AWS KMS using the `kms:Decrypt` API.
+	6. **Decrypt Data:** AWS KMS decrypts the key and returns the plaintext data key to your application.
+	7. **Final Read:** Your application uses that plaintext key to decrypt the actual file locally.
+- By storing the encrypted key with the data, the package becomes **self-contained**. You do not need a separate database just to map files to their respective encryption keys.
+
+## Key Policies vs. IAM Policies
+
+- Suppose you have a customer-data KMS key called `CustomerDataKey`. You want:
+	- Application A → allowed to decrypt
+	- Application B → denied
+	- Developers → denied
+	- Security team → allowed to administer the key
+- KMS uses **key policies** to control access to the key. You can also use **IAM policies** to grant permissions involving KMS keys, but KMS has an important property: The key policy is a resource-based policy attached directly to the key, similar to an S3 bucket policy.
+- **Scenario**: An application has the following IAM policy:
+	```
+	Allow:
+	    kms:Decrypt
+	    Resource: CustomerDataKey
+	```
+	- However, the KMS key's key policy does **not** allow that application/role to use the key.
+- **Will the application necessarily be able to decrypt the data? And what role does the KMS key policy play in determining whether access is allowed**?
+> 	If "does not allow" means an explicit denial, then the application won't be able to decrypt the data because an explicit denial always wins. If "does not allow" means the key policy doesn't specify permissions, then the permissions granted by the IAM policy would be sufficient. In this way the KMS key policy can act as a source of truth for who is allowed to access keys and what they're allowed to do with them, since the key policy is attached to the key directly.
+	- With KMS, **the key policy is central to authorization**, but whether an IAM policy alone is sufficient depends on what the key policy says.
+	- A KMS key policy can be configured to allow IAM policies to control access. In that case, an IAM policy alone would be enough to grant decrypt permissions.
+	- If the key policy is written so that it **doesn't enable IAM policies to grant access**, then the IAM policy by itself isn't enough.
+	- Improved Answer:
+		- KMS authorization depends on both the key policy and IAM policies. The key policy determines how the key can be accessed and can either directly grant access or enable IAM policies to grant access. An explicit deny overrides an allow.
+
+## Key Administrators vs. Key Users
+
+- Key administrators need to:
+	- Rotate the key
+	- Modify the key policy
+	- Disable/enable the key
+	- Schedule deletion
+- Key users only need to:
+	- Encrypt data
+	- Decrypt data
+- You generally **don't want the application role to administer the key**.
+- Why is it important to separate **key administration permissions** from **key usage permissions**? What could go wrong if the application role had both administrative permissions and `kms:Decrypt`?
+> 	Key administration and usage permissions need to be separated to properly enforce least-privilege permissions. If they were not separate, users would be able grant themselves permissions they shouldn't have. If an application role had administration and usage permissions, the key could easily be compromised if the application were hacked.
+	- The general principle is: An application that needs to use a key should not automatically have permission to administer that key.
+
+## Single-Region vs. Multi-Region Keys
+
+- Suppose an application operates in `us-east-1` and `us-west-2`. Both regions need to encrypt and decrypt the same category of data.
+- You have two options:
+	- Single-Region Key: Only exists and works in one AWS region, such as `us-east-1`.
+	- Multi-Region Key: Provides **releated** KMS keys in multiple AWS regions that share the same underlying key material and key ID.
+- **Scenario**: Your application is deployed active-active across **us-east-1 and us-west-2**, and encrypted data may need to be processed in either region.
+- Why might a **Multi-Region KMS key** be preferable to using two completely independent KMS keys, one in each region?
+> 	A Multi-Region KMS key would be preferable for this use case because data encrypted in one region using a Single-Region key can only be decrypted in that region. Once data is encrypted, it's essentially "stuck" in that region until it's decrypted. With Multi-Region keys, the same key material can be replicated across different regions, allowing data encrypted in one region to be decrypted in another region.
+	- Multi-Region keys shouldn't automatically be used when data moves from one region to another. They should specifically be used when **encrypted** data needs to move from one region to another. If data that moves between regions can still be effectively encrypted and decrypted in one region, Single-Region keys are a better choice.
+	- Don't introduce distributed infrastructure unless the requirements actually require it.
+
+## S3 + KMS Access
+
+- Suppose you have:
+	```
+	Application Lambda
+	       ↓
+	S3 customer-data bucket
+	       ↓
+	KMS CustomerDataKey
+	```
+	- The Lambda needs to:
+		- Read encrypted objects from S3
+		- Decrypt those objects
+		- Process them
+		- Write newly encrypted objects back to S3
+- What permissions would you give the **Lambda execution role**, and what permissions would you give the **developer**?
+> 	I would give the lambda permission to encrypt and decrypt data using the KMS key. I would also grant it access to get objects from the s3 bucket and write encrypted objects back to s3. I would only grant the developer permissions needed to access the Lambda's source code and modify the Lambda.
+	- The Lamda needs S3 and KMS permissions:
+		- `s3:GetObject`
+		- `s3:PutObject`
+		- `kms:Decrypt`
+		- `kms:Encrypt`
+	- These permissions should also be scoped to the specific bucket/prefix and KMS key rather than granting broad access.
+	- The developer only needs permissions necessary to **deploy and modify the Lambda**. They **don**'t need:
+		- `s3:GetObject`
+		- `kms:Descrypt`
+	- The developer's ability to modify the Lambda does create an important **indirect privilege-escalation consideration**, though. If the developer can deploy arbitrary Lambda code _and_ assign an execution role with `kms:Decrypt`, they could potentially use the Lambda to access customer data. That's why the `iam:PassRole` restriction is important: the developer should only be able to pass approved execution roles.
+
+# Secrets Manager
+
+## Overview
+
+- **Scenario**: Your application needs to connect to an RDS PostgreSQL database. You could put the credentials directly in the application, but this creates security and operational problems.
+- Why is **AWS Secrets Manager** preferable to hardcoding database credentials in application code or configuration?
+> 	Using Secrets Manager is preferable to hardcoding database credentials in application code or configuration because Secrets Manager acts as a secure, centralized repository for sensitive information. When credentials need to created, updated, or deleted, you only need to do so in one place. Access to secrets manager can be governed and monitored using IAM and CloudTrail. If credentials are ever compromised, they only need to be updated in one place. Instead of hardcoding secrets directly in an application's code or configuration, an application would make an API call to retrieve the necessary secret and potentially cache it for repeated use.
+	- Why Secrets Manager is Better:
+		- **Centralized management** → credentials aren't scattered across source code/configuration.
+		- **IAM-controlled access** → applications only get access to the secrets they need.
+		- **Auditing** → access can be monitored through CloudTrail.
+		- **Rotation** → credentials can be changed without modifying application source code.
+		- **Reduced blast radius** → if credentials are compromised, you can rotate the secret rather than hunting through application code/configuration.
+	- **Important Security Principle**: The application should have permission to retrieve the **specific secret it needs**—not broad permission to retrieve all secrets in the account.
+
+## Credential Rotation
+
+- Suppose your application uses:
+	```
+	Lambda
+	  ↓
+	Secrets Manager
+	  ↓
+	RDS PostgreSQL
+	```
+- One day, the rotation occurs while thousands of Lambda invocations are actively running.
+- What could go wrong if Lambda instances cache the database credentials? How would you design the application so that credential rotation doesn't cause widespread failures?
+> 	If a Lambda instance caches database credentials for too long, the cached credentials could become stale when the credentials are rotated. To ensure credential rotation doesn't cause widespread failures, I'd design the application to periodically poll Secrets Manager for updated values.
+	- Instead of only relying on periodic polling, the application should be designed to detect authentication failures caused by credential rotation and retrieve the current secret before attempting to re-authenticate.
+	- Periodic polling, even if done multiple times per second, could still lead to authentication failures caused by stale credentials.
+	- **Another important consideration**: If an application uses connection pooling, **existing database connections may still have the old credentials** while newly created connections use the new credentials. The application needs to handle that transition gracefully rather than assuming refreshing the secret automatically fixes every existing connection.
+
+## Secrets Manager vs. Parameter Store
+
+- Suppose you need to store:
+	- `DATABASE_PASSWORD`
+	- `API_KEY`
+	- `THIRD_PARTY_TOKEN`
+- You could use **AWS Systems Manager Parameter Store** or **Secrets Manager**.
+- What characteristics of the data or operational requirements would make **Secrets Manager** the better choice?
+> 	For sensitive information such as passwords, API keys, and tokens, Secrets Manager is typically the better choice because it offers built-in, automatic rotation for services such as RDS, or custome rotation via Lambda. Secrets manager also offers native support for cross-account access and cross-region replication.
+	- Secrets Manager is particularly appropriate when you're dealing with **credentials that need lifecycle management**, especially when automatic rotation is valuable.
+	- Parameter Store is often a good fit for configuration values and simpler parameters, while Secrets Manager is purpose-built for sensitive credentials and their lifecycle, including rotation.
+- Key Differences:
+	- **Cost:** Parameter Store standard tier is **free**, whereas Secrets Manager charges per secret per month plus a small fee per 10,000 API calls. Advanced Parameter Store tiers cost a fraction of Secrets Manager.
+	- **Rotation:** Secrets Manager features **built-in automatic rotation** for databases like RDS and custom rotation via Lambda. Parameter Store requires manual updates or custom external scheduling.
+	- **Sharing:** Secrets Manager supports **cross-account access** natively using resource-based policies. Parameter Store does not support direct cross-account access out of the box.
+	- **Data Types & Size:** Parameter Store handles plain text and encrypted strings up to 4KB (Standard) or 8KB (Advanced). Secrets Manager is tailored for structured credentials and larger secrets up to 10KB–64KB.
+- Use Cases:
+	- Parameter Store:
+		- Non-sensitive application settings, feature flags, environment names, and service URLs.
+		- Low-cost or free parameter storage where manual or CI/CD updates are sufficient.
+	- Secrets Manager:
+		- Highly sensitive credentials like database passwords, API keys, and OAuth tokens.
+		- Assets that require scheduled, automated rotation or multi-region replication.
+
+## Summary
+
+- **Scenario**: You have three Lambda functions:
+	- Lambda A = Production DB
+	- Lambda B = Analytics DB
+	- Lambda C = Third-Party API
+- Secrets Manager Contains:
+	- `prod-db-credentials`
+	- `analytics-db-credentials`
+	- `third-party-api-key`
+- A security review discovers that **all three Lambda execution roles have permission to retrieve all three secrets**.
+- What's wrong with this design? How would you redesign the IAM permissions to follow **least privilege**?
+> 	This design violates the principle of least privilege. Each Lambda execution role should only have access to the secrets needed to execute properly. I would redesign the IAM permissions for each execution role by narrowing the scope to the specific secret(s) needed, instead of all secrets in the account.
+	- This limits the **blast radius** if one Lambda or its execution role is compromised.
+
+# CloudWatch
+
+## Metrics
+
+- CloudWatch is AWS's primary monitoring and observability service. The first concept to nail down is the distinction between **metrics, logs, and alarms.**
+- A **metric** is a numerical measurement recorded over time.
+- For example, an application might publish:
+	- `CPUUtilization`
+	- `RequestCount`
+	- `ErrorCount`
+	- `Latency`
+	- `QueueDepth`
+- Metrics are useful because they let you understand the **health and behavior of a system without inspecting individual requests**. They also allow you to visualize how system health and behavior change over time.
+- **Scenario**: You operate an API service with a requirement that p99 latency must remain below 200 ms.
+- The service currently publishes:
+	- Average latency
+	- p50 latency
+	- p95 latency
+	- p99 latency
+	- Request count
+	- Error count
+- Which metric would you primarily monitor to determine whether the service is meeting its latency requirement, and why would **average latency** be a poor choice?
+> 	I would monitor p99 latency because it is directly related to the SLA. Observing P50 latency would be inappropriate because it gives you a sense of how the application operates under average conditions, not how it would operate under extreme load.
+	- P50 latency describes the **median** latency, not the average latency. It tells you that 50% of requests are faster than that value and 50% are slower.
+	- The important distinction is:
+		- P50 = typical request
+		- P95 = tail of the distribution
+		- P99 = extreme tail
+	- When you set a P99 latency SLA, you're essentially saying: "99% of request latencies should fall below this target."
+
+## Metrics vs. Logs
+
+- Suppose your API suddenly experiences a spike in errors. 
+	- A CloudWatch **metric** can tell you: "Error rate increased from 0.2% to 8%." It doesn't necessarily tell you **why**.
+	- Your application **logs** might contain:
+		```
+		2026-08-26 16:32:01 ERROR
+		OrderService
+		DynamoDB ProvisionedThroughputExceededException
+		customer_id=...
+		```
+	- Logs provide the **detailed context** surrounding individual events.
+- Suppose you notice that your API's error rate suddenly increased. Would you primarily use **CloudWatch Metrics** or **CloudWatch Logs** to investigate the root cause?
+> 	Both can be helpful. Metrics tell you how close the error rate is to breaching any defined SLA, which can tell you how quickly corrective action needs to be taken. Metrics can also tell you when the error rate started to increase, which can help narrow down your log search. Logs can provide insights into what specifically is causing the spike in error rates.
+	- Metrics can also be used to **automatically trigger alarms**, while logs are generally more useful for investigation.
+
+## Alarms
+
+- An alarm watches a metric and transitions between states based on a configured threshold.
+- For example:
+	```
+	p99 Latency
+	    │
+	300 │             ●
+	    │           ●
+	200 │───────────●──────── Threshold
+	    │        ●
+	100 │ ●  ●
+	    │
+	    └────────────────────→ Time
+	
+	              ↓
+	          ALARM STATE
+	```
+- You might configure the alarm as follows: If p99 latency exceeds 200 ms for 3 consecutive evaluation periods, enter the `ALARM` state.
+- The alarm can then trigger an action, such as:
+	- Sending an SNS notification
+	- Triggering an Auto Scaling policy
+	- Invoking another AWS integration
+- **Scenario**: Your API has a requirement:
+	- p99 latency must remain below 200 ms.
+	- You configure:
+		- Threshold: 200 ms
+		- Evaluation periods: 3
+		- Datapoints to alarm: 3
+	- The observed values are:
+		- Period 1: 100 ms
+		- Period 2: 215 ms
+		- Period 3: 230 ms
+		- Period 4: 190 ms
+- **Would the alarm enter `ALARM` state? Why is requiring multiple evaluation periods potentially better than immediately alarming whenever a single datapoint exceeds 200 ms**?
+> 	The alarm would not enter ALARM state because the SLA was only breached for two evaluation periods. Using an appropriate number of evaluation periods prevents the alarm from being flakey in the event of transient spikes.
+	- Evaluation Periods (N) and Datapoints to Alarm (M) work together in Amazon CloudWatch to create an M-out-N alarm, defining the total window checked versus how many individual failures are required to trigger an alert.
+	- In this example, 3 out of 3 datapoints would be needed to trigger the alarm, but only 2 out of 3 were recorded.
+
+### Alarm Configuration
+- Suppose your service has a P99 latency SLA of 200 ms.
+- You want to alert the on-call engineer when there's a **sustained latency problem**, but you don't want to page them for a brief spike.
+- You configure the alarm as follows:
+	- Threshold: 200 ms
+	- Evaluation periods: 5
+	- Datapoints to alarm: 3
+- This means the on-call engineer will be paged when 3 out of 5 datapoints break the threshold.
+- Why might `3 out of 5` be preferable to `5 out of 5` for an on-call alert? What is the tradeoff compared with `1 out of 5`?
+> 	3 out of 5 is preferable to 5 out of 5 because if the service is truly underperforming, but experiencing transient of relief, a 5 out of 5 configuration might not trigger the alarm when it's appropriate. On the other hand, a 1 out of 5 configuration could trigger an alarm in a healthy service that experiences transient latency spikes.
+	- Alarm thresholds and evaluation periods should be chosen based on the behavior of the workload and the operational cost of false positives versus delayed detection.
+
+### Composite Alarms
+- Suppose your API has an error rate of 8%. That sounds pretty bad, but also imagine:
+	- Error rate = 8%
+	- CPU = 35%
+	- Latency = Normal
+	- Traffic / Request count = Normal
+- The errors might be caused by a small number of invalid client requests rather than an unhealthy service.
+- You might instead want to page the on-call engineer only when **multiple indicators suggest the service itself is unhealthy**. For example, page the on-call when the error rate and latency alarms transition into an `ALARM` state.
+- A **CloudWatch Composite Alarm** combines the states of multiple underlying alarms using logical conditions.
+- **Scenario**: You have:
+	- `HighErrorRate` alarm
+	- `HighLatency` alarm
+	- `HighCPU` alarm
+- You want to page the on-call engineer only when: `HighErrorRate AND (HighLatency OR HighCPU)`
+- Why might a composite alarm be preferable to simply paging whenever `HighErrorRate` enters the `ALARM` state? What benefit does this provide for reducing **alert fatigue**?
+> 	Depending on the nature of the service, a high error rate by itself may not be a reliable indicator of service health. The composite alarm will trigger when a high error rate is combined with either high latency or high CPU utilization. Using composite alarms can help reduce alarm fatigue by appropriately narrowing the scope that defines when an alarm is triggered.
+
+## Dashboards
+
+- Suppose you're operating an SQS → Lambda → DynamoDB pipeline.
+- You have the following metrics:
+	- SQS Queue Depth
+	- Lambda Invocation Count
+	- Lambda Error Rate
+	- Lambda Duration
+	- DynamoDB Throttled Requests
+	- DynamoDB Consumed Capacity
+- An engineer looking at these individually might have difficulty understanding how the system is behaving as a whole. A dashboard can put the relevant metrics together.
+- **Scenario**: You notice that **SQS queue depth is steadily increasing**.
+- What would you investigate next using the other metrics?
+- Specifically, how could you distinguish between:
+	1. **Lambda doesn't have enough processing capacity**
+	2. **Lambda is processing messages slowly because DynamoDB is the bottleneck**
+	3. **DynamoDB itself is throttling requests**
+> 	I would investigate Lambda Duration and DynamoDB Throttling. These metrics could give me a sense of how Lambda and DynamoDB are working together to process messages in the queue. If Lambda Duration is increasing and/or elevated, but DynamoDB Throttling is level and normal, it would indicate Lambda doesn't have enough processing capacity. If Lambda Duration is level and normal, but DynamoDB Throttling is increasing and/or elevated, it could indicate DynamoDB is the bottleneck. If Queue Depth and Lambda Duration are level and normal, but DynamoDB Throttling is increasing and/or elevated, it would indicate DynamoDB is throttling requests.
+		- Lambda Capacity Problem:
+			- **SQS queue depth ↑**
+			- **Lambda duration ↑**
+			- **DynamoDB throttling → normal**
+			- Investigate Lambda's own processing capacity—CPU, memory, concurrency, downstream calls, etc.
+		- DynamoDB Bottleneck:
+			- **SQS queue depth ↑**
+			- **Lambda duration ↑**
+			- **DynamoDB throttling ↑**
+		- DynamoDB Throttling:
+			- If **Lambda duration remains normal while queue depth increases**, that would suggest the Lambda may not actually be waiting on DynamoDB long enough for throttling to affect its duration, or that the throttling is occurring on a path that isn't reflected in the measured duration.
+		- Lambda **concurrency** is also a useful metric to look at. If queue depth is increasing while Lambda concurrency is already near its configured limit, that strongly suggests you've hit a Lambda concurrency bottleneck.
+
+## Log Insights
+
+- Suppose your Lambda logs contain entries such as:
+	```
+	2026-08-26T17:10:01 ERROR
+	request_id=abc123
+	operation=UpdateOrder
+	error=DynamoDB.ThrottlingException
+	duration_ms=842
+	
+	2026-08-26T17:10:02 ERROR
+	request_id=def456
+	operation=UpdateOrder
+	error=DynamoDB.ThrottlingException
+	duration_ms=911
+	```
+- You have **millions of log entries**, so manually searching through them isn't practical.
+- You want to know: Which errors occurred most frequently during the last 30 minutes?
+- How would **CloudWatch Logs Insights** help you answer this?
+	- CloudWatch Log Insights would help efficiently search logs by enabling you to use SQL-style syntax to query the log data.
+	- Logs Insights lets you **query and aggregate large volumes of CloudWatch logs** instead of manually inspecting individual entries.
+	- Log Insights uses the **CloudWatch Logs Insights query language**, which is SQL-like in some ways, but isn't actually SQL.
+- For this particular problem, you'd want to:
+	- Filter logs to the last 30 minutes.
+	- Filter for error entries.
+	- Group/count them by the error type.
+	- Sort by frequency.
+- This lets you quickly discover something like:
+	```
+	DynamoDB.ThrottlingException    12,431
+	TimeoutException                 3,812
+	ValidationException              1,204
+	```
+	- Rather than manually searching millions of records.
+- **Scenario**: Your API started returning a large number of `500` errors around **17:00**.
+	- You want to determine: Which API endpoint is generating the most 500 errors, and what downstream dependency is associated with those failures?
+	- Your logs contain fields such as:
+		- `timestamp`
+		- `status_code`
+		- `endpoint`
+		- `request_id`
+		- `dependency`
+		- `error_type`
+	- How would you approach this investigation using **CloudWatch Logs Insights**?
+> 	I would filter by status_code and timestamp, group by by endpoint, and count request_id to determine which API is producing the most errors. Once I knew which API was causing the errors, I'd filter by status_code, timestamp, and endpoint, the group by dependency and count request_id to determine which dependency is causing the failures.
+		- **`count(*)`** would typically be more direct than counting `request_id`, assuming every log record represents one request/error. However, `count(request_id)` is still a valid approach.
+
+## Summary
+
+- **Scenario 1**: You operate this pipeline:
+	```
+	                SQS
+	                 ↓
+	              Lambda
+	                 ↓
+	             DynamoDB
+	```
+- At 2:00 PM, your monitoring shows:
+	```
+	SQS Queue Depth       ↑↑
+	Lambda Duration       ↑
+	Lambda Errors         ↑
+	DynamoDB Throttles    ↑
+	```
+- CloudWatch Log Insights shows: `DynamoDB.ProvisionedThroughputExceededException` appearing frequently in the Lambda logs.
+- Walk me through how you would investigate this incident using **CloudWatch Metrics, Alarms, Dashboards, and Logs Insights**.
+> 	I'd look at the dashboard to determine if there is a relationship between the various metrics. I'd also check alarm history to see if any alarms are active or were recently triggered. Reviewing the metrics and dashboards would allow me to use log insights to narrow my search to the specific service or services that are unhealthy, as well as narrow down the log search based on timestamp. Using the results of the Log Insights query would allow me to identify the likely bottleneck causing the issues.
+- Before concluding what the bottleneck is based on the results of the Log Insights query, the hypothesis **should be verified**. A good debugging workflow would look like:
+	1. Check the dashboard
+		- Establish when the queue depth started increasing.
+		- Correlate Lambda duration/errors with DynamoDB throttling.
+		- Determine whether the symptoms started at roughly the same time.
+	2. Check alarm history
+		- Identify which alarms triggered and when.
+		- This helps establish the incident timeline and whether the current behavior crossed predefined thresholds.
+	3. Use Log Insights
+		- Narrow the log search to the incident window.
+		- Since DynamoDB throttling is increasing, search for `ProvisionedThroughputExceededException`.
+		- Aggregate by relevant fields such as table, operation, or partition key if those are available in the logs.
+	4. **Confirm the bottleneck**
+		- If DynamoDB throttling correlates with increased Lambda duration and queue depth, DynamoDB is a strong candidate for the bottleneck.
+		- Then investigate _why_ DynamoDB is throttling—insufficient capacity, a hot partition, an inappropriate capacity mode, etc.
+	5. Take corrective action
+		- Depending on the cause, you might adjust DynamoDB capacity, address a hot partition, or reduce/reshape the workload.
+		- Then use the same CloudWatch metrics to verify that queue depth and Lambda latency return to normal.
+- Key Interview Principle:
+	- Metrics tell you where and when the problem is; Logs Insights helps you determine why; alarms tell you when predefined conditions have been breached; dashboards let you correlate the system's behavior.
+- **Scenario 2**: You're deploying a new **SQS → Lambda → DynamoDB** data-processing pipeline.
+- You need monitoring that can detect:
+	- Messages accumulating faster than Lambda can process them
+	- Lambda processing failures
+	- Excessive Lambda latency
+	- DynamoDB throttling
+	- A situation where the system is technically functioning but becoming unhealthy
+- What **CloudWatch metrics and alarms** would you create for this pipeline? For each major component, tell me **what you'd monitor and what kind of condition would cause an alarm**.
+> 	For Lambda, I'd look at processing latency and concurrency to determine how well Lambda is handling the load. I'd also check error counts to see if there is a spike in processing failures. For SQS, I'd look at queue depth and the age of the oldest message to determine how severe the backlog is. For DynamoDB, I'd look at throttling metrics to determine if the database is being overwhelmed. When reviewing alarm history, I'd look for SQS queue depth, Lambda duration, Lambda errors, and DynamoDB throttling.
+	- Lambda:
+		- **Duration** → are individual messages taking too long?
+		- **Concurrency** → are we approaching Lambda's concurrency limit?
+		- **Errors** → are messages repeatedly failing?
+		- **Also consider Lambda throttling**, which specifically tell you Lambda is rejecting invocations because concurrency capacity has been reached.
+	- SQS:
+		- **ApproximateNumberOfMessagesVisible** → backlog size
+		- **ApproximateAgeOfOldestMessage** → how long messages are waiting
+	- DynamoDB:
+		- **Throttled requests** are the key metric for detecting capacity pressure.
+
+# CloudTrail
+
+## Overview
+
+- A useful mental model for distinguishing between CloudWatch and CloudTrail is:
+	- **CloudWatch tells you what your systems are doing.** 
+	- **CloudTrail tells you what actions were taken against your AWS account/resources.**
+- In CloudWatch, you might see:
+	```
+	Lambda errors ↑
+	DynamoDB throttling ↑
+	CPU utilization ↑
+	```
+	- This tells you **something is happening** to the system.
+- In CloudTrail, you might see:
+	```
+	Who:     arn:aws:iam::123456789:role/Developer
+	Action:  DeleteTable
+	Resource: OrdersTable
+	Time:    14:32 UTC
+	```
+	- This helps answer: "Who performed an AWS API action, what action did they perform, and when?"
+- **Scenario**: You notice that an S3 bucket's configuration unexpectedly changed.
+	- Your CloudWatch dashboard looks completely normal: CPU, Latency, and Error Count are all normal.
+	- However, someone changed the bucket policy and the application can no longer access the bucket.
+- Why would **CloudTrail** be more useful than CloudWatch for investigating this incident? And what information would you look for in the CloudTrail event?
+> 	CloudWatch primarily tells you how a system is behaving. CloudTrail primarily tells you what actions have been taken against your AWS account or the resources within it. CloudTrail would be a more useful investigative tool in this scenario because all metrics are normal, but the bucket policy was changed. This modification made the bucket inaccessible to the application. CloudTrail can tell you who performed this action and when.
+	- Useful CloudTrail Information:
+		- **Who** performed the action (`userIdentity`)
+		- **What API action** was performed (`eventName`, e.g. `PutBucketPolicy`)
+		- **When** it occurred (`eventTime`)
+		- **Which resource/account/region** was involved
+		- **Where the request came from**, such as source IP or AWS service
+		- **How the request was made**, such as console, CLI, SDK, or another AWS service
+	- This gives you the audit trail needed to determine whether the change was intentional, accidental, or potentially malicious.
+
+## Management Events vs. Data Events
+
+- CloudTrail can record different categories of activity. Two important categories are management and data events.
+- **Management Events**:
+	- These involve **management/control-plane operations**, such as:
+		- `CreateBucket`
+		- `DeleteBucket`
+		- `PutBucketPolicy`
+		- `CreateRole`
+		- `UpdateFunctionConfiguration`
+		- `CreateTable`
+	- These are generally about **creating, modifying, or deleting AWS resources/configuration**.
+- **Data Events**:
+	- These concern **operations performed on the actual data inside a resource**.
+	- For example, S3 data events can include:
+		- `GetObject`
+		- `PutObject`
+		- `DeleteObject`
+	- These are **object-level** operations, which is why they're considered data events. The management events are **bucket-level** events.
+- **Scenario 1**: Your security team wants to investigate: "Who accessed sensitive customer files in our S3 bucket during the last 24 hours?"
+- They don't care who changed the bucket configuration. They specifically want to know **who read individual objects**.
+- Would you primarily need **management events or data events**?
+> 	Since the primary concern isn't how modified the bucket configuration, you would primarily need to look at data events, such as GetObject, to determine who read the individual objects. Management events would primarily tell you how the bucket was modified.
+	- **Management events** → changes to AWS resources and configuration.
+	- **Data events** → operations performed against the actual data within supported resources.
+- **Scenario 2**: Your security team receives an alert: An IAM role that normally operates from your AWS infrastructure suddenly performed several sensitive API calls from an unfamiliar source IP address.
+- CloudTrail shows:
+	```
+	Principal:  arn:aws:iam::123456789:role/ApplicationRole
+	Source IP:  203.0.113.50
+	Actions:
+	    PutBucketPolicy
+	    CreateAccessKey
+	    GetObject
+	```
+- How would you use CloudTrail to investigate this incident?
+> 	I'd look at CloudTrail management events related to changing the configuration of the ApplicationRole, since this role is being used by the unfamiliar IP address to perform the sensitive API calls. I'd also look at data events to determine if sensitive data could have potentially been exposed.
+- Proper Investigation Sequence:
+	1. Examine the CloudTrail event itself:
+		- `eventName`
+		- `eventTime`
+		- `userIdentity`
+		- `sourceIPAddress`
+		- `userAgent`
+		- affected resource
+	2. Investigate the role's recent management activity:
+		- Look for changes to the role or its policies.
+		- Pay particular attention to actions such as `PutRolePolicy`, `AttachRolePolicy`, or changes to the trust policy.
+		- This could reveal how an attacker obtained or expanded access.
+	3. Investigate the suspicious API activity:
+		- Look at the `PutBucketPolicy`, `CreateAccessKey`, and other sensitive calls.
+		- Determine what resources were affected and whether the calls were successful.
+	4. Investigate potential data exposure:
+		- Use S3 **data events** to look for `GetObject` activity around the same period.
+		- Determine which objects were accessed and by which principal.
+	5. Establish a timeline:
+		```
+		Role/policy modified
+		        ↓
+		Suspicious API access
+		        ↓
+		Bucket policy modified
+		        ↓
+		S3 objects accessed
+		```
+		- This helps distinguish **initial compromise → privilege escalation → malicious activity → potential data exposure**.
+- The fact that the unfamiliar IP is using the application role doesn't necessarily mean the **role itself was modified**. The credentials could have been compromised without changing the role. So both **changes to the role** _and_ **how/when the role was assumed** should be investigated.
+- CloudTrail can record the `AssumeRole` event, which can help trace the chain:
+	```
+	IAM User / Service
+	       ↓
+	   AssumeRole
+	       ↓
+	ApplicationRole
+	       ↓
+	S3 / DynamoDB / etc.
+	```
+	- Role assumption is important when investigating CloudTrail activity because it tells you who had access to the role. You can compare this to the role's trust policy to see if the assumption is valid or invalid. Only looking at the PutBucketPolicy event doesn't necessarily tell you who assumed the role that grants those permissions.
+	- The `AssumeRole` event should be examined and the caller should be compared against the role's trust policy to determine if the role assumption was expected and authorized.
+
+## Retention and Centralization
+
+- Imagine your company has:
+	- Account A = Production
+	- Account B = Development
+	- Account C = Security / Logging
+- The security team wants to ensure that an attacker who compromises the production account **cannot simply delete or modify the audit logs** needed to investigate the incident.
+- How would you design CloudTrail logging so that audit records are protected from someone who compromises the production account?
+> 	I'd configure CloudTrail to deliver logs from the production account into a centralized S3 bucket in a dedicated security/logging account. Access to that bucket would be restricted to the security team and other explicitly authorized personnel. This protects the audit trail from an attacker who gains administrative access to the production account, because they wouldn't automatically have permission to modify or delete the centralized logs.
+- The important architectural pattern is:
+	```
+	Production Account
+	       │
+	       │ CloudTrail
+	       ↓
+	┌──────────────────────┐
+	│ Security/Log Account │
+	│                      │
+	│  Central S3 Bucket   │
+	│  CloudTrail Logs     │
+	└──────────────────────┘
+	       ↑
+	       │
+	  Restricted access
+	```
+	- This is essentially **separation of concerns**: the account generating the activity shouldn't have unrestricted control over the evidence used to audit that activity.
+
+# API Gateway
+
+## Overview
+
+- API Gateway is a managed front door for APIs. A common architecture is:
+	```
+	Client
+	   ↓
+	API Gateway
+	   ↓
+	Lambda / ECS / other backend
+	   ↓
+	Application logic
+	```
+- API Gateway can handle concerns such as:
+	- Routing requests
+	- Authentication/authorization
+	- Validation
+	- Rate limiting/throttling
+	- Request/response transformation
+	- Monitoring
+	- API lifecycle/version management
+- **Scenario**: You have a serverless application:
+	```
+	Mobile App
+	    ↓
+	Lambda
+	    ↓
+	DynamoDB
+	```
+- The Lambda function currently has a public endpoint that clients invoke directly. You want to introduce API Gateway.
+- What advantages does putting **API Gateway in front of Lambda** provide compared with exposing the Lambda endpoint directly?
+> 	API Gateway can act as a secure front door that provides authentication, validation, and throttling. By routing requests through API Gateway before sending them to the Lambda for processing, the Lambda function and downstream services and data can be protected from malicious activity.
+	- **API Gateway doesn't inherently make the backend immune to malicious traffic**. It provides mechanisms to authenticate, authorize, validate, and throttle requests, which can substantially reduce unwanted load and protect backend resources.
+
+## Throttling
+
+- Suppose your API typically handles 1,000 TPS traffic. Suddenly a buggy client starts sending 50,000 TPS traffic. Without throttling, those requests could overwhelm your Lambda functions and downstream DynamoDB table.
+- How would **API Gateway throttling** help in this situation? Why is throttling useful even when Lambda itself can automatically scale?
+> 	API Gateway can help in this situation by denying requests from clients whose request rate exceeds an established threshold. Throttling is useful even if the Lambda function can handle the load because this does not mean any downstream dependencies can also scale to handle the increased load.
+	- API Gateway provides a **protective layer in front of horizontally scalable backends**. Lambda may be able to scale rapidly, but that doesn't mean every downstream dependency, such as DynamoDB, can scale at the same rate.
+	- Throttling doesn't necessarily mean API Gateway permanently **denies** requests. Depending on the configuration and API Gateway behavior, requests exceeding the rate/burst limits can be **throttled/rejected**, typically resulting in a `429 Too Many Requests`response.
+- API Gateway can throttle requests at various levels, depending on the configuration:
+	- **Account/Region-level throttling:** A shared limit across your APIs in an AWS account/region. This acts as a global safety limit.
+	- **Stage/API/method-level throttling:** You can set more specific limits for particular APIs, stages, or methods.
+	- **Usage plans + API keys:** You can throttle **per client/API key**, with limits such as requests per second and burst capacity.
+- **API Gateway does not inherently throttle every client independently**. The default throttling is primarily a shared/account-level mechanism, while **per-client throttling requires usage plans/API keys (or another client-specific mechanism)**.
+
+## Authentication vs. Authorization
+
+- Suppose you have a `POST /orders` API. Only authenticated users should be able to call it. Furthermore, User A should only be able to access **their own orders**, while an administrator can access orders belonging to any user.
+- What's the difference between **authentication** and **authorization** in this scenario? Where would you expect API Gateway to participate in this process?
+> 	Authentication verifies who is making the request, while authorization verifies they have the required permissions. API Gateway can perform authentication, while backend services can perform authorization through least-privilege IAM policies.
+	- Authentication can **sometimes** be performed using least-priviledge IAM roles, but there are certain scenarios IAM can't handle. For example, determining whether `User A` is allowed to call `GET /orders/123` depends on whether **order 123 belongs to User A**. That's **application-level authorization**, and you'd typically need the backend to enforce that ownership rule.
+	- Authentication verifies the caller's identity, while authorization determines what that identity is permitted to access. API Gateway can participate in authentication and authorization using mechanisms such as authorizers. The backend should still enforce resource-level authorization, such as verifying that a user actually owns or is allowed to access a requested resource.
+
+## Rate Limiting vs. Authentication
+
+- Suppose you have a **public API** that allows unauthenticated users to search products. You want to prevent a single client from consuming excessive resources. You decide to impose a limit of 100 requests per minute per API key.
+- What is the purpose of **API keys and usage plans** in API Gateway? How is this different from using authentication to determine whether someone is allowed to access the API at all?
+> 	The API keys and usage plans allow API Gateway to apply the limit to a specific user or key, rather than globally for all requests. This is differs from using authentication because authentication only determines who someone is, it doesn't necessarily tell you how many requests they've made.
+	- **API key / usage plan** → identifies a client/application for purposes of **usage controls**, such as quotas and throttling.
+	- **Authentication** → establishes the identity of the caller.
+	- **Authorization** → determines what that authenticated identity is allowed to access.
+	- **An API key should not generally be treated as a strong authentication mechanism by itself.** It's primarily useful for identifying and controlling API consumers.
+
+## Backend Protection
+
+- Suppose you have application consisting of:
+	```
+	Mobile App
+	    ↓
+	API Gateway
+	    ↓
+	Lambda
+	    ↓
+	DynamoDB
+	```
+	- A developer accidentally exposes the Lambda function's **Function URL** publicly, allowing clients to bypass API Gateway entirely.
+- Why is this a security and architecture problem? How would you ensure that clients **must go through API Gateway** rather than directly invoking the Lambda?
+> 	I would prevent the Lambda from being publicly invokable and configure it so that only API Gateway has permission to invoke it. The Lambda's resource-based policy can restrict `lambda:InvokeFunction` to the API Gateway service/principal associated with the API. That way, even if someone knows the Lambda's endpoint, they can't bypass the API Gateway controls.
+	- Using resource-based policies to restrict how the Lambda can be invoked is better than implementing a custom signature policy, where API signs requests before sending them to Lambda, then Lambda validates the signature before processing the request.
+	- Using resource-based policies is much simpler and uses existing AWS architecture.
+
+## API Gateway vs. Load Balancer
+
+- Suppose you have a backend service running on **ECS**:
+	```
+	Clients
+	   ↓
+	???
+	   ↓
+	ECS Service
+	```
+- You need:
+	- HTTP/HTTPS routing
+	- TLS termination
+	- Health checks
+	- Load balancing across ECS tasks
+- You **don't** necessarily need API-specific features such as API keys, usage plans, request transformation, or API lifecycle management.
+- Would **API Gateway** or an **Application Load Balancer (ALB)** be the more natural choice here? What characteristics of the workload would make you choose one over the other?
+> 	An Application Load Balancer would be a more natural choice because the workload requires health checks, TLS termination, and load balancing across tasks, not just request routing. Furthermore the service doesn't require API-specific features.
+	- An **ALB** is the more natural choice when the primary requirement is distributing HTTP/HTTPS traffic across a fleet of backend services.
+	- ALB is primarily a load balancer for backend compute, while API Gateway is primarily an API management/front-door service.
+
+|Requirement|ALB|API Gateway|
+|---|---|---|
+|Load balance ECS tasks|✅|Not its primary purpose|
+|Health checks|✅|Not the same role|
+|TLS termination|✅|✅|
+|Basic HTTP routing|✅|✅|
+|API keys / usage plans|❌|✅|
+|API-specific authorization|Limited|✅|
+|Request/response transformation|Limited|✅|
+|Serverless API front door|—|✅|
