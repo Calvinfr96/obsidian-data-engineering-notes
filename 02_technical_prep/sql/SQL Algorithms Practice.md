@@ -656,6 +656,151 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		- Step 1: Calculate monthly order revenue per customer. `DATE_FORMAT(order_date, '%Y-%m-01')` is used so date arithmetic can be performed properly later. Date arithmetic won't work with just `DATE_FORMAT(order_date, '%Y-%m')`.
 		- Step 2: Use `LAG()` to find the previous month and previous revenue, going back 1 month and 2 months.
 		- Step 3: In the final query, ensure that revenue increased during the 3-month period **and** that the months are **actually consecutive**. `SELECT DISTINCT` is used in case a customer has more than one qualifying 3-month period.
+2. Find customers whose **latest order amount is greater than their first order amount**.
+	- Requirements:
+		- Customers must have at least **two orders**.
+		- If multiple orders occur on the same date, use `order_id` to break the tie.
+		- The first/latest order refers to chronological order by `order_date` and `order_id`.
+	- Return: `customer_id | customer_name | first_order_amount | last_order_amount`
+	- `customers`: `[customer_id, customer_name]`
+		- `customer_id`: INT
+		- `customer_name`: VARCHAR(30)
+	- `orders`: `[order_id, customer_id, order_date, amount]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+	- Solution:
+		```sql
+		WITH first_and_last_orders AS (
+		    SELECT
+		        customer_id,
+		        amount,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_date, order_id
+		        ) AS first_order_rnk,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_date DESC, order_id DESC
+		        ) AS last_order_rnk
+		    FROM orders
+		)
+		SELECT
+		    c.customer_id,
+		    c.customer_name,
+		    MAX(
+		        CASE
+		            WHEN first_order_rnk = 1 THEN amount
+		        END
+		    ) AS first_order_amount,
+		    MAX(
+		        CASE
+		            WHEN last_order_rnk = 1 THEN amount
+		        END
+		    ) AS latest_order_amount
+		FROM customers c
+		JOIN first_and_last_orders o
+		    ON c.customer_id = o.customer_id
+		GROUP BY
+		    c.customer_id,
+		    c.customer_name
+		HAVING COUNT(*) >= 2
+		   AND MAX(
+		        CASE
+		            WHEN last_order_rnk = 1 THEN amount
+		        END
+		   ) >
+		       MAX(
+		        CASE
+		            WHEN first_order_rnk = 1 THEN amount
+		        END
+		   );
+		```
+		- In the main query, `MAX()` is somewhat redundant since the rankings are already partitioned by `customer_id`. It's only used to get the first and last orders on the same row.
+3. Find customers who, during **2026**:
+	- Had at least **4 completed orders**.
+	- Had completed orders in at least **3 different quarters**.
+	- Their **highest-quarter revenue** represented at least **50% of their annual completed-order revenue**.
+	- Requirements:
+		- Only `completed` orders count.
+		- Only 2026 orders count.
+		- `annual_revenue` = total completed revenue for 2026.
+		- `highest_quarter_revenue` = the largest of Q1, Q2, Q3, Q4 completed revenue.
+		- `highest_quarter_percentage` = `highest_quarter_revenue / annual_revenue`.
+		- A customer must have activity in at least 3 distinct quarters.
+		- Order by `highest_quarter_percentage` descending.
+	- Return: `customer_id | customer_name | annual_revenue | highest_quarter_revenue | highest_quarter_percentage`
+	- `customers`: `[customer_id, customer_name]`
+		- `customer_id`: INT
+		- `customer_name`: VARCHAR(30)
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH sales_quarters AS (
+		    SELECT
+		        order_id,
+		        customer_id,
+		        (
+		            CASE
+		                WHEN MONTH(order_date) BETWEEN 1 AND 3 THEN 'Q1'
+		                WHEN MONTH(order_date) BETWEEN 4 AND 6 THEN 'Q2'
+		                WHEN MONTH(order_date) BETWEEN 7 AND 9 THEN 'Q3'
+		                ELSE 'Q4'
+		            END
+		        ) AS sales_quarter,
+		        amount
+		    FROM orders
+		    WHERE YEAR(order_date) = 2026 AND status = 'completed'
+		),
+		quarterly_stats AS (
+		    SELECT
+		        customer_id,
+		        sales_quarter,
+		        SUM(amount) AS quarterly_revenue,
+		        COUNT(order_id) AS quarterly_order_count
+		    FROM sales_quarters
+		    GROUP BY
+		        customer_id,
+		        sales_quarter
+		),
+		annual_stats AS (
+		    SELECT
+		        customer_id,
+		        SUM(quarterly_revenue) AS annual_revenue,
+		        MAX(quarterly_revenue) AS highest_quarter_revenue,
+		        SUM(quarterly_order_count) AS annual_order_count,
+		        COUNT(sales_quarter) AS active_quarters
+		    FROM quarterly_stats
+		    GROUP BY customer_id
+		)
+		
+		SELECT
+		    c.customer_id,
+		    c.customer_name,
+		    s.annual_revenue,
+		    s.highest_quarter_revenue,
+		    (s.highest_quarter_revenue * 1.0 / s.annual_revenue) AS highest_quarter_percentage
+		FROM annual_stats s
+		JOIN customers c
+		    ON s.customer_id = c.customer_id
+		WHERE
+		    s.annual_order_count >= 4
+		    AND s.active_quarters >= 3
+		    AND (s.highest_quarter_revenue * 1.0 / s.annual_revenue) >= 0.5
+		ORDER BY highest_quarter_percentage DESC;
+		```
+		- Originally, in the `annual_stats` CTE, you were using `OVER (PARTITION BY customer_id)` for all of the aggregations. When you notice this, and the other columns in your table don't represent data aggregated at a different level (or no level), **it's a sign you should use `GROUP BY` instead of window functions**.
+		- Overall flow:
+			1. Establish quarterly "buckets", based on `order_date`, which can be used to find quarterly statistics.
+			2. Find quarterly statistics (`revenue` and `order_count`) by grouping by `customer_id` and `sales_quarter`.
+			3. Find annual statistics (`revenue`, `highest_quarter_revenue`, and `order_count`) by grouping quarter statistics by `customer_id`.
+			4. Join with `customers` table to retrieve `customer_name`, calculate `highest_quarter_percentage`, and apply appropriate filters using `WHERE`.
 
 ## Conditional Aggregation Problems
 
@@ -906,6 +1051,202 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		WHERE q1_total > q2_total
 		ORDER BY (q1_total - q2_total) DESC;
 		```
+1. Find customers who placed a **completed order in January 2026 and another completed order in February 2026**.
+	- Requirements:
+		- Only `completed` orders count.
+		- January means `2026-01-01` through `2026-01-31`.
+		- February means `2026-02-01` through `2026-02-28`.
+		- A customer may have multiple orders in either month.
+		- Return the **total revenue for each month**.
+		- Customers must have orders in **both** months.
+		- Order by `february_revenue` descending.
+	- Return: `customer_id | customer_name | january_revenue | february_revenue`
+	- `customers`: `[customer_id, customer_name]`
+		- `customer_id`: INT
+		- `customer_name`: VARCHAR(30)
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id`: INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		SELECT
+		    c.customer_id,
+		    c.customer_name,
+		    SUM(
+		        CASE
+		            WHEN MONTH(o.order_date) = 1 THEN o.amount
+		            ELSE 0
+		        END
+		    ) AS january_revenue,
+		    SUM(
+		        CASE
+		            WHEN MONTH(o.order_date) = 2 THEN o.amount
+		            ELSE 0
+		        END
+		    ) AS february_revenue
+		FROM customers c
+		JOIN orders o
+		    ON c.customer_id = o.customer_id
+		WHERE YEAR(o.order_date) = 2026 AND o.status = 'completed'
+		GROUP BY
+		    c.customer_id,
+		    c.customer_name
+		HAVING
+		    COUNT(
+		        CASE
+		            WHEN MONTH(o.order_date) = 1 THEN order_id
+		        END
+		    ) >= 1
+		    AND COUNT(
+		        CASE
+		            WHEN MONTH(o.order_date) = 2 THEN order_id
+		        END
+		    ) >= 1
+		ORDER BY february_revenue DESC;
+		```
+2. Find employees whose **monthly sales increased from January through March 2026**.
+	- Requirements:
+		- Only sales from 2026 count.
+		- Only employees with sales in **all three months** should qualify.
+		- Multiple sales within a month should be summed.
+		- The comparison is based on **total monthly sales**, not individual transactions.
+		- Order by `march_sales` descending.
+		- Return: `employee_id | employee_name | january_sales | february_sales | march_sales`
+	- `employees`: `[employee_id, employee_name, department]`
+		- `employee_id`: INT
+		- `employee_name`: VARCHAR(30)
+		- `department`: VARCHAR(30)
+	- `employee_sales`: `[sale_id, employee_id, sale_date, amount]`
+		- `sale_id`: INT
+		- `employee_id`: INT
+		- `sale_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+	- Solution:
+		```sql
+		WITH monthly_sales AS (
+		    SELECT
+		        e.employee_id,
+		        e.employee_name,
+		        SUM(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 1 THEN s.amount
+		                ELSE 0
+		            END
+		        ) AS january_sales,
+		        SUM(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 2 THEN s.amount
+		                ELSE 0
+		            END
+		        ) AS february_sales,
+		        SUM(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 3 THEN s.amount
+		                ELSE 0
+		            END
+		        ) AS march_sales
+		    FROM employees e
+		    JOIN employee_sales s
+		        ON e.employee_id = s.employee_id
+		    WHERE YEAR(s.sale_date) = 2026
+		    GROUP BY
+		        e.employee_id,
+		        e.employee_name
+		    HAVING
+		        COUNT(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 1 THEN s.sale_id
+		            END
+		        ) >= 1
+		        AND COUNT(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 1 THEN s.sale_id
+		            END
+		        ) >= 1
+		        AND COUNT(
+		            CASE
+		                WHEN MONTH(s.sale_date) = 1 THEN s.sale_id
+		            END
+		        ) >= 1
+		)
+		
+		SELECT
+		    employee_id,
+		    employee_name,
+		    january_sales,
+		    february_sales,
+		    march_sales
+		FROM monthly_sales
+		WHERE
+		    february_sales > january_sales
+		    AND march_sales > february_sales
+		ORDER BY march_sales DESC;
+		```
+		- The `INNER JOIN` only ensures each employee has at least one sale in **all of 2026**. It doesn't ensure an employee has a sale in each month because grouping and aggregation happen after joing.
+1. Find customers who:
+	- Have placed **at least one completed order** in 2026.
+	- Have **never had a cancelled order** in 2026.
+	- Have at least **3 total orders** in 2026, regardless of status.
+	- Return: `customer_id | customer_name | total_orders | total_revenue`
+		- `total_orders` = **all** 2026 orders for the customer, regardless of status.
+		- `total_revenue` = revenue from **completed** 2026 orders only.
+	- `customers`: `[customer_id, customer_name]`
+		- customer_id: INT
+		- customer_name: VARCHAR(30)
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id`: INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHA(30)
+	- Solution:
+		```sql
+		WITH valid_customers AS (
+		    SELECT
+		        c.customer_id,
+		        c.customer_name
+		    FROM customers c
+		    WHERE EXISTS (
+		        SELECT 1
+		        FROM orders o
+		        WHERE c.customer_id = o.customer_id
+		        AND YEAR(o.order_date) = 2026
+		        AND o.status = 'completed'
+		    )
+		    AND NOT EXISTS (
+		        SELECT 1
+		        FROM orders o
+		        WHERE c.customer_id = o.customer_id
+		        AND YEAR(o.order_date) = 2026
+		        AND o.status = 'cancelled'
+		    )
+		)
+		
+		SELECT
+		    c.customer_id,
+		    c.customer_name,
+		    COUNT(o.order_id) AS total_orders,
+		    SUM(
+		        CASE
+		            WHEN o.status = 'completed' THEN o.amount
+		            ELSE 0
+		        END
+		    ) AS total_revenue
+		FROM valid_customers c
+		JOIN orders o
+		    ON c.customer_id = o.customer_id
+		    AND YEAR(o.order_date) = 2026
+		GROUP BY
+		    c.customer_id,
+		    c.customer_name
+		HAVING COUNT(order_id) >= 3
+		ORDER BY total_revenue DESC;
+		```
+		- Interesting case of using `EXISTS / NOT EXISTS` with conditional aggregation.
+		- The second join condition is needed because `valid_customers` only filters for **customers** based on 2026 orders. **It doesn't actually filter orders based on the year**.
 
 ## EXISTS / NOT EXISTS Problems
 
@@ -1419,6 +1760,7 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 	- Deposits vs withdrawals
 	- Domestic vs international
 	- Active vs inactive
+- When a problem asks about a fixed number of known periods, conditional aggregation is often simpler than `LAG()`.
 
 ## Ranking Functions
 
@@ -1475,6 +1817,7 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 	```
 	- This subquery is correlated and will only check orders associated with a customer from the `customers` table.
 	- "This customer has no orders ≤ $100."
+- Don't use EXISTS / NOT EXISTS before aggregating. Use HAVING instead.
 
 ## LEFT JOIN vs. INNER JOIN
 

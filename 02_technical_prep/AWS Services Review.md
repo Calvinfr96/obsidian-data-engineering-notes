@@ -4643,13 +4643,13 @@ Always ask: **What guarantees does the business require**?
 	- An **ALB** is the more natural choice when the primary requirement is distributing HTTP/HTTPS traffic across a fleet of backend services.
 	- ALB is primarily a load balancer for backend compute, while API Gateway is primarily an API management/front-door service.
 
-|Requirement|ALB|API Gateway|
-|---|---|---|
-|Load balance ECS tasks|✅|Not its primary purpose|
-|Health checks|✅|Not the same role|
-|TLS termination|✅|✅|
-|Basic HTTP routing|✅|✅|
-|API keys / usage plans|❌|✅|
-|API-specific authorization|Limited|✅|
-|Request/response transformation|Limited|✅|
-|Serverless API front door|—|✅|
+| Requirement                     | ALB     | API Gateway             |
+| ------------------------------- | ------- | ----------------------- |
+| Load balance ECS tasks          | ✅       | Not its primary purpose |
+| Health checks                   | ✅       | Not the same role       |
+| TLS termination                 | ✅       | ✅                       |
+| Basic HTTP routing              | ✅       | ✅                       |
+| API keys / usage plans          | ❌       | ✅                       |
+| API-specific authorization      | Limited | ✅                       |
+| Request/response transformation | Limited | ✅                       |
+| Serverless API front door       | —       | ✅                       |
