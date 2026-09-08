@@ -1,6 +1,6 @@
 # AWS Data Engineering — Interview Prep
 
-> Interview-focused summary of the uploaded AWS Services Q&A. The source is broad and repetitive, so this note emphasizes **mental models, service selection, tradeoffs, failure modes, and scenarios** rather than memorizing definitions. fileciteturn17file0
+> Interview-focused summary of the uploaded AWS Services Q&A. The source is broad and repetitive, so this note emphasizes **mental models, service selection, tradeoffs, failure modes, and scenarios** rather than memorizing definitions.
 
 ## 1. AWS Data Engineering Mental Model
 
@@ -62,7 +62,7 @@ Object created → S3 event → Lambda / SQS / SNS
 
 **Access Points**
 - Useful when many teams need different access to the same bucket.
-- Avoids one enormous bucket policy becoming unmanageable. fileciteturn18file17
+- Avoids one enormous bucket policy becoming unmanageable.
 
 ### Interview trap
 
@@ -72,7 +72,7 @@ Object created → S3 event → Lambda / SQS / SNS
 
 # 3. Amazon DynamoDB
 
-DynamoDB is a fully managed NoSQL database designed for fast, predictable performance and seamless scalability. It supports key-value and document data models. fileciteturn21file9
+DynamoDB is a fully managed NoSQL database designed for fast, predictable performance and seamless scalability. It supports key-value and document data models.
 
 > **Core interview principle:** Design DynamoDB around **access patterns**, not a normalized relational schema.
 
@@ -83,7 +83,7 @@ A table can use:
 - **Simple primary key:** partition key
 - **Composite primary key:** partition key + sort key
 
-The **partition key** determines data distribution. The **sort key** lets multiple related items share a partition key and supports ordered queries within that item collection. fileciteturn21file5
+The **partition key** determines data distribution. The **sort key** lets multiple related items share a partition key and supports ordered queries within that item collection.
 
 Example:
 
@@ -107,7 +107,7 @@ PK = UserID
 SK = Timestamp
 ```
 
-The source specifically identifies timestamp-only keys as a hot-partition scenario and recommends a composite key to spread writes across users. fileciteturn21file6
+The source specifically identifies timestamp-only keys as a hot-partition scenario and recommends a composite key to spread writes across users.
 
 > **Interview answer:** "I'd choose a high-cardinality partition key that distributes traffic evenly and avoid keys that concentrate concurrent writes."
 
@@ -129,11 +129,11 @@ Main table → 10,000 WCUs
 GSI        → 5 WCUs
 ```
 
-Writes can still be throttled because the GSI must keep up with table writes. The source calls this **GSI backpressure**. fileciteturn21file8
+Writes can still be throttled because the GSI must keep up with table writes. The source calls this **GSI backpressure**.
 
 ### LSI and the 10 GB Item-Collection Limit
 
-When a table has an LSI, the source states that the collection of items sharing one partition key cannot exceed **10 GB**. This can become a problem for a customer with millions of orders under one partition key. fileciteturn21file11
+When a table has an LSI, the source states that the collection of items sharing one partition key cannot exceed **10 GB**. This can become a problem for a customer with millions of orders under one partition key.
 
 ## Capacity
 
@@ -148,8 +148,6 @@ Capacity planning depends on:
 - Access patterns
 - Indexes
 
-fileciteturn21file5turn21file6
-
 ### On-Demand vs. Provisioned
 
 **On-Demand**
@@ -162,7 +160,7 @@ Capacity planning depends on:
 - Good for predictable workloads
 - Can use auto-scaling
 
-The source notes that auto-scaling may react too slowly to sudden spikes, making on-demand preferable for some unpredictable workloads. fileciteturn21file7turn21file8
+The source notes that auto-scaling may react too slowly to sudden spikes, making on-demand preferable for some unpredictable workloads.
 
 ## Eventual vs. Strongly Consistent Reads
 
@@ -174,7 +172,7 @@ The source notes that auto-scaling may react too slowly to sudden spikes, making
 - Returns the most up-to-date value
 - Use when the latest value is required immediately
 
-The source uses an account-balance scenario to illustrate this distinction. fileciteturn21file10
+The source uses an account-balance scenario to illustrate this distinction.
 
 > **Interview answer:** "I'd use eventual consistency when some staleness is acceptable. For a critical read where the latest value is required immediately, I'd use a strongly consistent read."
 
@@ -188,7 +186,7 @@ The source uses an account-balance scenario to illustrate this distinction. f
 
 Therefore:
 
-> **Prefer Query over Scan for production access patterns whenever possible.** fileciteturn21file6
+> **Prefer Query over Scan for production access patterns whenever possible.**
 
 ## Pagination
 
@@ -202,8 +200,6 @@ Request → 1 MB → LastEvaluatedKey
              Next request using
              ExclusiveStartKey
 ```
-
-fileciteturn21file10
 
 ## Condition Expressions and Optimistic Locking
 
@@ -229,7 +225,7 @@ UPDATE ... WHERE version = 1
 → fails
 ```
 
-This prevents Admin B from silently overwriting Admin A's changes. fileciteturn21file3turn21file4
+This prevents Admin B from silently overwriting Admin A's changes.
 
 ## Transactions
 
@@ -239,9 +235,9 @@ Useful when several writes must succeed atomically.
 
 Tradeoff:
 
-> Transactions can increase latency and reduce throughput compared with single-item operations. fileciteturn21file4
+> Transactions can increase latency and reduce throughput compared with single-item operations.
 
-The source also discusses transaction item/size limits and application-level alternatives such as a Saga pattern when a single transaction cannot contain the required work. fileciteturn21file3
+The source also discusses transaction item/size limits and application-level alternatives such as a Saga pattern when a single transaction cannot contain the required work.
 
 ## DynamoDB Streams
 
@@ -257,7 +253,7 @@ Lambda
 Downstream processing
 ```
 
-Use cases include downstream processing, search-index updates, replication, and asynchronous cleanup. fileciteturn21file5turn21file8
+Use cases include downstream processing, search-index updates, replication, and asynchronous cleanup.
 
 ### Streams Failure Handling
 
@@ -266,8 +262,6 @@ The source includes a malformed-record scenario where Lambda repeatedly fails an
 Recommended mechanisms:
 - **Bisect on Function Error** to isolate the bad record
 - **On-Failure Destination / DLQ** after retries
-
-fileciteturn21file11
 
 ## No Cascade Deletes
 
@@ -283,7 +277,7 @@ Orders: PK=USER#1, SK=ORDER#A
 
 Deleting the User does not delete the Orders.
 
-The source recommends querying the partition and deleting child items, or using DynamoDB Streams + Lambda for asynchronous cleanup. fileciteturn21file8
+The source recommends querying the partition and deleting child items, or using DynamoDB Streams + Lambda for asynchronous cleanup.
 
 ## Item Size Limit
 
@@ -291,7 +285,7 @@ The source states a maximum single-item size of **400 KB**.
 
 For larger data:
 - Split it across multiple items, or
-- Store the large payload in S3 and keep a pointer/metadata in DynamoDB. fileciteturn21file4turn21file6
+- Store the large payload in S3 and keep a pointer/metadata in DynamoDB.
 
 ## TTL
 
@@ -299,7 +293,7 @@ DynamoDB TTL deletes expired items through a background process.
 
 > **TTL is not real-time deletion.**
 
-The source warns not to use TTL as the application's correctness mechanism; application logic should still determine whether data is expired. fileciteturn21file10
+The source warns not to use TTL as the application's correctness mechanism; application logic should still determine whether data is expired.
 
 ## Caching
 
@@ -311,7 +305,7 @@ The source identifies:
 **ElastiCache / Redis**
 > External caching for frequently accessed data.
 
-Caching can reduce latency and DynamoDB reads. fileciteturn21file7
+Caching can reduce latency and DynamoDB reads.
 
 ## Backups and Recovery
 
@@ -319,7 +313,7 @@ DynamoDB supports:
 - On-demand backups
 - Continuous backups / point-in-time recovery
 
-Backups can be used to recover table data. fileciteturn21file7
+Backups can be used to recover table data.
 
 ## Monitoring and Troubleshooting
 
@@ -350,17 +344,15 @@ GSI bottleneck?
 Query vs. Scan?
 ```
 
-fileciteturn21file4turn21file7
-
 ## DynamoDB Scenarios to Practice
 
-1. **Hot partition:** Timestamp as PK causes concentrated writes. Fix with a better partition key/composite key. fileciteturn21file6
-2. **Scan in production:** Scan reads the entire table; design around Query. fileciteturn21file6
-3. **GSI throttling:** A low-capacity GSI can throttle writes to the main table. fileciteturn21file8
-4. **Lost update:** Use optimistic locking with a version attribute and conditional write. fileciteturn21file3
-5. **Stale read:** Use strong consistency when the latest value is required immediately. fileciteturn21file10
-6. **400 KB item:** Split the item or store the large payload in S3. fileciteturn21file4turn21file6
-7. **Poison-pill stream record:** Isolate the record and use a DLQ/on-failure destination. fileciteturn21file11
+1. **Hot partition:** Timestamp as PK causes concentrated writes. Fix with a better partition key/composite key.
+2. **Scan in production:** Scan reads the entire table; design around Query.
+3. **GSI throttling:** A low-capacity GSI can throttle writes to the main table.
+4. **Lost update:** Use optimistic locking with a version attribute and conditional write.
+5. **Stale read:** Use strong consistency when the latest value is required immediately.
+6. **400 KB item:** Split the item or store the large payload in S3.
+7. **Poison-pill stream record:** Isolate the record and use a DLQ/on-failure destination.
 
 ---
 
@@ -379,7 +371,7 @@ IAM controls access to AWS resources.
 - Provides temporary credentials
 - Preferred for AWS services such as Glue, Lambda, and EC2
 
-> **Machines should generally use roles, not hard-coded IAM access keys.** fileciteturn18file3
+> **Machines should generally use roles, not hard-coded IAM access keys.**
 
 ## Identity-based vs. resource-based policy
 
@@ -460,7 +452,7 @@ Permissions boundary
 Effective permissions
 ```
 
-Useful when developers need to create roles but must not be able to create unrestricted admin roles. fileciteturn20file18
+Useful when developers need to create roles but must not be able to create unrestricted admin roles.
 
 ## RBAC vs. ABAC
 
@@ -523,7 +515,7 @@ Useful for automated schema discovery, but huge numbers of partitions can make c
 ## Glue jobs
 
 - **Spark jobs:** large distributed workloads
-- **Python Shell:** smaller workloads that don't need Spark fileciteturn18file5
+- **Python Shell:** smaller workloads that don't need Spark
 
 Glue uses Spark for distributed ETL.
 
@@ -577,7 +569,7 @@ When a job is slow:
 7. Review transformations.
 8. Only then add compute.
 
-The source gives an OOM scenario where one executor was overloaded because of a skewed join; key salting was preferred over simply increasing DPUs. fileciteturn18file15
+The source gives an OOM scenario where one executor was overloaded because of a skewed join; key salting was preferred over simply increasing DPUs.
 
 ## Glue cost
 
@@ -651,7 +643,7 @@ Preferred for analytics because they provide:
 - Less I/O
 - Lower scan cost
 
-The source includes a JSON→Parquet scenario where converting the data dramatically reduces bytes scanned. fileciteturn17file9
+The source includes a JSON→Parquet scenario where converting the data dramatically reduces bytes scanned.
 
 ## Partitioning
 
@@ -672,7 +664,7 @@ High-cardinality partitioning can create:
 
 ## Partition projection
 
-Useful when partition counts become extremely large. Athena can derive partition locations from configured rules instead of enumerating every folder through the catalog. fileciteturn18file18
+Useful when partition counts become extremely large. Athena can derive partition locations from configured rules instead of enumerating every folder through the catalog.
 
 ## CTAS
 
@@ -697,7 +689,7 @@ Convenient for occasional cross-source queries, but repeatedly querying operatio
 
 ## Iceberg
 
-The source highlights Iceberg when lake data needs update/delete/table-management capabilities rather than simple read/append semantics. fileciteturn18file18
+The source highlights Iceberg when lake data needs update/delete/table-management capabilities rather than simple read/append semantics.
 
 ---
 
@@ -723,7 +715,7 @@ Small + event-driven + bursty → Lambda
 Large + distributed + long-running → Glue/EMR
 ```
 
-The source contrasts Lambda with EC2/Glue for sporadic file processing. fileciteturn18file9
+The source contrasts Lambda with EC2/Glue for sporadic file processing.
 
 ## Important constraints
 
@@ -773,7 +765,7 @@ Fix:
 2. Correct the destination.
 3. Re-enable processing.
 
-The source explicitly presents this scenario. fileciteturn20file0
+The source explicitly presents this scenario.
 
 ---
 
@@ -799,7 +791,7 @@ App Lambda Analytics
 **Kinesis**
 > Stream. Multiple consumers can independently process/replay the data.
 
-Kinesis also provides ordering within a shard. fileciteturn20file13
+Kinesis also provides ordering within a shard.
 
 ## Shards
 
@@ -872,7 +864,7 @@ Larger buffer  → larger batches / potentially better efficiency
 Records → Firehose → Lambda transform → destination
 ```
 
-Failed transformations can be routed to S3 for analysis. fileciteturn18file0
+Failed transformations can be routed to S3 for analysis.
 
 ---
 
@@ -899,7 +891,7 @@ Use for:
 - Columnar storage
 - MPP
 
-The source uses this exact distinction in its scenario questions. fileciteturn19file15
+The source uses this exact distinction in its scenario questions.
 
 ## Architecture
 
@@ -956,7 +948,7 @@ Preferred for bulk loading.
 Source → S3 → COPY → Redshift
 ```
 
-Avoid millions of individual INSERTs for bulk ingestion. The source emphasizes parallel loading from S3. fileciteturn19file19
+Avoid millions of individual INSERTs for bulk ingestion. The source emphasizes parallel loading from S3.
 
 ## `UNLOAD`
 
@@ -970,7 +962,7 @@ Exports Redshift data to S3.
 **ANALYZE**
 > Updates optimizer statistics.
 
-The source explicitly tests this distinction. fileciteturn19file2
+The source explicitly tests this distinction.
 
 ## Redshift Spectrum
 
@@ -1015,7 +1007,7 @@ Source DB
     Target DB
 ```
 
-DMS tasks can combine full load and CDC. fileciteturn18file1
+DMS tasks can combine full load and CDC.
 
 ## Replication lag
 
@@ -1062,7 +1054,7 @@ Additional authenticated data associated with encryption/decryption.
 Encrypt(data, key, context={App: Frontend})
 ```
 
-Can prevent a permitted principal from decrypting data intended for a different context. fileciteturn19file0
+Can prevent a permitted principal from decrypting data intended for a different context.
 
 ## Key deletion
 
@@ -1108,7 +1100,7 @@ Move AWSCURRENT
 
 ## Private subnet
 
-A Glue job without internet access can use a **VPC Interface Endpoint / PrivateLink** to reach Secrets Manager without a NAT Gateway. fileciteturn19file8
+A Glue job without internet access can use a **VPC Interface Endpoint / PrivateLink** to reach Secrets Manager without a NAT Gateway.
 
 ## Cross-account secrets
 
@@ -1202,7 +1194,7 @@ Example:
 
 > User can query the Sales table but cannot see the SSN column.
 
-The source presents Lake Formation as a data-centric permission layer while IAM still provides the underlying AWS permissions. fileciteturn18file18
+The source presents Lake Formation as a data-centric permission layer while IAM still provides the underlying AWS permissions.
 
 ---
 
@@ -1268,7 +1260,7 @@ If one message in a batch fails:
 5 ✓
 ```
 
-Report only message 3 as failed so successful messages can be removed while message 3 is retried. The source includes this as a failure-handling scenario. fileciteturn20file9
+Report only message 3 as failed so successful messages can be removed while message 3 is retried. The source includes this as a failure-handling scenario.
 
 ---
 
@@ -1283,7 +1275,7 @@ Useful for:
 - Throttling
 - Routing
 
-For users and API infrastructure in the same region, a **Regional** endpoint may avoid unnecessary CloudFront/edge routing overhead. The source gives this as a latency scenario. fileciteturn20file1
+For users and API infrastructure in the same region, a **Regional** endpoint may avoid unnecessary CloudFront/edge routing overhead. The source gives this as a latency scenario.
 
 ---
 
@@ -1504,7 +1496,7 @@ Check:
 - Lake Formation
 - Cross-account trust
 
-The source explicitly recommends checking endpoint policies, bucket policies, and permissions boundaries when an IAM role appears to have S3 access. fileciteturn18file16
+The source explicitly recommends checking endpoint policies, bucket policies, and permissions boundaries when an IAM role appears to have S3 access.
 
 ### Slow Glue job
 Check:
