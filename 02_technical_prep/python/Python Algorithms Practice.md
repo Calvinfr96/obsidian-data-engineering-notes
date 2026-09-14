@@ -1267,6 +1267,57 @@
 			- Processing Heap: O(m log(k))
 			- Time: O(n + m log(k))
 			- Space: O(m + k)
+1. **Top K Pipeline Failures**: A data pipeline produces failure events:
+	- Example:
+		```python
+		failures = [
+		    ("extract", 12),
+		    ("transform", 25),
+		    ("load", 8),
+		    ("validate", 19),
+		    ("aggregate", 30),
+		]
+		```
+	- Each tuple contains: `(stage_name, failure_count)`.
+	- Wite a function that returns the **k stages with the highest failure counts**.
+	- Expected Result (k = 2):
+		```python
+		[
+		    ("aggregate", 30),
+		    ("transform", 25)
+		]
+		```
+	- **Approach**:
+		- A min heap would be useful in determining the top K failures. The heap would need to be maintained such that the head of the heap represented the bottom of the top K failures. When the heap has fewer than K elements, elements are added to the heap normally. If the heap already contains K elements and the new element is greater than the minimum, remove the minimum and insert the new element. This is preferable to sorting everything when K is small because you'd be expending a lot resources to sort a relatively large number of events compared to the number of events that need to be returned.
+	- **Data Structures**:
+		- Heap: Determines the top K failures.
+		- Dictionary: Determines failure frequency of each stage.
+	- **Complexity**:
+		- Time:
+			- Determining the frequencies of each stage failure takes O(m) time, where m is the number of stages.
+			- Processing the heap takes O(m log(k)) time, where k is the number of requested stages.
+			- The heap does **not** guarantee elements to be in sorted order. It only guarantees the smallest element will be first.
+			- If the problem required the final result to be sorted, the time complexity would be O(m log(k) + k log(k)).
+		- Space: The space complexity is O(k).
+	- Solution:
+		```python
+		import heapq
+		
+		def top_k_failures(failures, k):
+		    top_failures = list()
+		
+		    if not failures:
+		        return top_failures
+		
+		    for stage, frequency in failures:
+		        if len(top_failures) < k:
+		            heapq.heappush(top_failures, (frequency, stage))
+		        elif frequency > top_failures[0][0]:
+		            heapq.heapreplace(top_failures, (frequency, stage))
+		
+		    return top_failures
+		```
+		- **Important Note**: You **cannot** use `heapq.heappush(top_failures, (stage, frequency))`. Python's `heapq` compares tuples **lexicographically**. That means it would primarily order by `stage`, not `frequency`.
 
 ## Stacks / Queues
 
@@ -1410,6 +1461,872 @@
 		                current_job = queued_jobs.popleft()
 		
 		    return completed_jobs
+		```
+
+## Binary Search
+
+1. **Find The First Failed Partition**: A data pipeline processes partitions in order. Once a partition fails, **every subsequent partition is also considered failed**.
+	- You receive a sorted list of partition results where:
+		- 0 = successful
+		- 1 = failed
+	- For example: `results = [0, 0, 0, 0, 1, 1, 1, 1]`. The first failed partition is at index 4. `results` is **guaranteed to be in sorted order**.
+	- Write a function that returns the **index of the first failed partition**.
+	- Expected Result: 4
+	- **Approach**:
+		- Use a two-pointer approach to eliminate half of the results during each iteration. The pointers are `left` and `right`. Initially, `left = 0` and `right = len(results) - 1`.
+		- At each iteration `mid = (left + right) // 2`.
+		- When `results[mid] == 1`, `right` is updated to `mid`, eliminating all values to the right.
+		- When `results[mid] == 0`, `left` is updated to `mid + 1`, eliminating all values to the left.
+		- Iteration continues while `left < right`.
+		- When iteration ends, you check `results[left]` to see if it's a 1. You need to use `left` because you only iterate while `left < right`.
+	- **Data Structures**:
+		- No dictionary or list is required. Only a `left`, `right`, and `mid` pointer are needed.
+	- **Complexity**:
+		- Time: O(log(n)), where n is the number of elements in the list.
+		- Space: O(1)
+	- Solution:
+		```python
+		def first_failed_partition(results):
+			if not results:
+				return -1
+		
+			left = 0
+			right = len(results) - 1
+		
+			while left < right:
+				mid = (left + right) // 2
+		
+				if results[mid] == 1:
+					right = mid
+				else:
+					left = mid + 1
+		
+			if results[left] == 1:
+				return left
+			else:
+				return -1
+		```
+1. **Earliest Valid Partition**: A data pipeline processes partitions of increasing size. You are given the processing time for each partition size. The partition sizes are implicitly **ordered from smallest to largest**.
+	- Example:
+		```python
+		processing_times = [2, 4, 7, 11, 16, 22, 30]
+		target = 10
+		```
+	- Find the **smallest partition size whose processing time is at least a target threshold**.
+	- Expected Result: 3. `11` is the first processing time ≥ 10.
+	- **Approach**:
+		- Binary search can be used because the list is sorted. If `processing_times[mid] >= threshold`, then all numbers to the right are no longer candidates. Right should be updated to mid. Mid could still be the answer, which is why it shouldn't be discarded. As the algorithm progresses, left represents the smallest processing time that could be greater than or equal to the threshold.
+	- **Data Structures**:
+		- No data structures are needed for the problem, just tracker variables.
+	- **Complexity**:
+		- Time: O(log(n)), where n is the number of partitions.
+		- Space: O(1)
+	- Solution:
+		```python
+		def first_slow_partition(processing_times, threshold):
+		    if not processing_times:
+		        return -1
+		
+		    left = 0
+		    right = len(processing_times) - 1
+		
+		    while left < right:
+		        mid = (left + right) // 2
+		
+		        if processing_times[mid] >= threshold:
+		            right = mid
+		        else:
+		            left = mid + 1
+		
+		    if processing_times[left] >= threshold:
+		        return left
+		    else:
+		        return -1
+		```
+1. **Data Quality Threshold**: You have a data pipeline that processes batches of increasing size. For each batch size, you know how much memory the batch requires. The values **are sorted** because larger batches require at least as much memory as smaller batches.
+	- Example:
+		```python
+		memory_usage = [100, 150, 220, 310, 450, 700, 1000]
+		limit = 450
+		```
+	- Find the **largest batch index that can safely be processed** without exceeding the memory limit.
+	- Expected Result: 450
+	- **Approach**:
+		- Binary search can be used because the list of batches is sorted. This problem is different than the previous two problems because we're looking for a value that falls at or below a threshold. if `memory_usage[mid] <= limit`, `mid` could still be the answer because the value is allowed to be the same as the threshold. When `memory_usage[mid] <= limit`, you should search to the right. Otherwise, you should search to the left. `left` and `right` represent the range of indices that could still contain the largest valid batch.
+	- **Data Structures**:
+		- No data structures are needed for the problem, just tracker variables.
+	- **Complexity**:
+		- Time: O(log(n)), where n is the number of batches.
+		- Space: O(1)
+	- Solution:
+		```python
+		def largest_safe_batch(memory_usage, limit):
+		    if not memory_usage:
+		        return -1
+		
+		    left = 0
+		    right = len(memory_usage) - 1
+		
+		    while left < right:
+		        mid = (left + right + 1) // 2
+		
+		        if memory_usage[mid] <= limit:
+		            left = mid
+		        else:
+		            right = mid - 1
+		
+		    if memory_usage[left] <= limit:
+		        return left
+		
+		    return -1
+		```
+		- Key Takeaways describes why this algorithm is slightly modified.
+
+## Trees / Graphs
+
+1. **Deepest Pipeline Dependency**: A data pipeline is represented as a tree of dependencies. Each node represents a pipeline task.
+	- Example:
+		```python
+		class TaskNode:
+		    def __init__(self, name):
+		        self.name = name
+		        self.children = []
+		
+		"""
+		             extract
+		            /       \
+		      validate      transform
+		        /              \
+		    schema            aggregate
+		"""
+		```
+	- The tree has the following structure:
+		```python
+		root = TaskNode("extract")
+		
+		validate = TaskNode("validate")
+		transform = TaskNode("transform")
+		schema = TaskNode("schema")
+		aggregate = TaskNode("aggregate")
+		
+		root.children = [validate, transform]
+		validate.children = [schema]
+		transform.children = [aggregate]
+		```
+	- The **depth** of a node is the number of edges from the root. In the above example:
+		```
+		extract     → depth 0
+		validate    → depth 1
+		transform   → depth 1
+		schema      → depth 2
+		aggregate   → depth 2
+		```
+	- Write a function that returns the name of a task at the greatest depth.
+	- Expected Result: Either `"schema"` or `"aggregate"` is acceptable because both are at depth 2.
+	- Additional Requirements:
+		- The tree can have an arbitrary number of children per node.
+		- The tree may contain only the root.
+		- If `root` is `None`, return `None`.
+		- You should target **O(n)** time, where `n` is the number of nodes.
+	- **Approach**:
+		- Counterintuitively, BFS would be the best approach to traversing the tree. This is because BFS traverses the tree **level-by-level**, meaning the last level encountered is **necessarily the deepest level**.
+		- A queue can be built with tuples containing `(node, depth)`. Then we can keep track of the deepest node we've encountered.
+	- **Data Structures**:
+		- A queue will be used to track a node and its associated depth in the tree.
+	- **Complexity**:
+		- Time: O(n), where n is the number of pipeline tasks.
+		- Space: O(n) in the worst-case scenario.
+	- Solution:
+		```python
+		from collections import deque
+		
+		class TaskNode:
+		    def __init__(self, name):
+		        self.name = name
+		        self.children = []
+		
+		def deepest_task(root: TaskNode):
+		    if not root:
+		        return None
+		    
+		    nodes = deque()
+		    nodes.append((root, 0))
+		    deepest_node = root.name
+		    deepest_level = 0
+		
+		    while nodes:
+		        task, level = nodes.popleft()
+		
+		        if level > deepest_level:
+		            deepest_level = level
+		            deepest_node = task.name
+		
+		        for child in task.children:
+		            nodes.append((child, level + 1))
+		
+		    return deepest_node
+		```
+1. **Find a Pipeline Task**: You are given the same `TaskNode` structure as the previous problem and the root of a pipeline dependency tree and a task name.
+	- Example:
+		```
+		             extract
+		            /       \
+		      validate      transform
+		        /              \
+		    schema            aggregate
+		```
+	- Write a function that returns `True` if a task with the given name exists and `False` otherwise.
+	- Expected Result: `True` for `"transform"`.
+	- **Approach**:
+		- DFS is a reasonable choice for this problem because we're not concerned with the level or depth of the pipeline dependency. We're just concerned with its existence within the tree. You can implement DFS without recursion by building a stack. When you find the target, you return True. If you never find the target, you return False.
+	- **Data Structures**:
+		- A stack will be used to traverse the tree using the DFS strategy.
+	- **Complexity**:
+		- Time: O(n), where n is the number of pipeline dependencies. This is the worst-case scenario, where every dependency is checked.
+		- Space: O(n). This is the worst-case scenario, where every dependency is checked.
+	- Solution:
+		```python
+		class TaskNode:
+		    def __init__(self, name):
+		        self.name = name
+		        self.children = []
+		
+		def find_task(root: TaskNode, target):
+		    if not root:
+		        return False
+		    
+		    nodes = list()
+		    nodes.append(root)
+		
+		    while nodes:
+		        task = nodes.pop()
+		
+		        if task.name == target:
+		            return True
+		
+		        for child in task.children:
+		            nodes.append(child)
+		
+		    return False
+		```
+		- You don't build up the whole stack first, then traverse through it. Instead, you `pop()` a node, then add its children.
+		- Starting with the `root` node, the stack momentarily becomes empty. If `root` has children, the stack is filled with those children.
+		- For each child, the same procedure is followed. This ensures you're depth increases with each iteration.
+		- Children will naturally stopped being added when you reach leaf nodes, so the stack won't have the chance to grow infinitely.
+1. **Pipeline Dependency Depth**: A pipeline task can have multiple dependencies.
+	- Example:
+		```
+		                 ingest
+		                /      \
+		          validate      clean
+		           /    \         \
+		       schema  quality    normalize
+		```
+	- Determine the **maximum dependency depth** of the pipeline where the root has a depth of 0.
+	- Expected Result: 2
+	- Requirements:
+		- Return `-1` if `root` is `None`.
+		- A single-node tree has depth `0`.
+		- Each child is one level deeper than its parent.
+		- The tree can have an arbitrary number of children.
+	- **Approach**:
+		- I would choose BFS because you'd naturally arrive at the deepest level of the tree towards the end of the iteration. The state that needs to be maintained during the iteration is the deepest level. When using DFS, you could keep track of the depth by adding tasks to the stack as tuple. One element of the tuple could be the task itself, while the other is the level, starting with 0 for the root task. When you add children, the depth for the tasks being added would be 'current_level + 1'. The same approach could be used when adding tasks to the queue when using BFS.
+	- **Data Structures**:
+		-   A queue will be used to track a node and its associated depth in the tree.
+	- **Complexity**:
+		- Time: O(n), where n is the number of pipeline dependencies. This is the worst-case scenario, where every dependency is checked.
+		- Space: O(n). This is the worst-case scenario, where the queue contains many tasks simultaneously.
+	- Solution:
+		```python
+		from collections import deque
+		
+		def max_pipeline_depth(root: TaskNode):
+		    if not root:
+		        return -1
+		    
+		    nodes = deque()
+		    nodes.append((root, 0))
+		    max_depth = 0
+		
+		    while nodes:
+		        task, level = nodes.popleft()
+		
+		        if level > max_depth:
+		            max_depth = level
+		
+		        for child in task.children:
+		            nodes.append((child, level + 1))
+		
+		    return max_depth
+		```
+1. **Pipeline Dependency Validation (Cycle Detection)**: A pipeline is supposed to have a single root task, with dependencies represented as children.
+	- Example:
+		```
+		             extract
+		            /       \
+		       validate    transform
+		        /              \
+		    schema            aggregate
+		```
+	- However, the pipeline configuration may contain a **cycle** due to an erroneous dependency:
+		```
+		             extract
+		                |
+		             transform
+		                |
+		             aggregate
+		                |
+		             transform   ← cycle
+		```
+	- Determine whether the dependency structure contains a cycle.
+	- Example Input:
+		```python
+		dependencies = {
+		    "extract": ["validate", "transform"],
+		    "validate": ["schema"],
+		    "transform": ["aggregate"],
+		    "schema": [],
+		    "aggregate": ["transform"]
+		}
+		```
+	- Expected Result: `True`
+	- **Approach**:
+		- Mimic a recursive approach, where a task and its dependencies are **recursively** added to a stack. The recursive approach is mimicked using an iterator. First, the node and its dependencies (stored in an iterator) are added to the stack.
+		- Before adding to the stack, the node is checked to see if it has already been visited. If it has, the iteration of the loop is skipped to avoid processing a node more than once.
+		- While there are items in the stack, nodes are added to the stack and their dependencies are inspected one-by-one. If a node has no more dependencies, it is removed from the stack and added to a list of visited nodes.
+		- If a node has dependencies and a dependency is also being visited, a cycle has been detected. Otherwise, the dependency's dependencies are added to the stack.
+	- **Data Structures**:
+		- A stack will be used to traverse the tree using the DFS strategy.
+		- Two sets will be used. One will be used to keep track of notes currently being processed. The other will be used to keep track of nodes that have been fully processed.
+	- **Complexity**:
+		- Time: O(V + E), where V is the number of tasks (vertices) and E is the number of dependency relationships (edges).
+		- Space: O(V)
+	- Solution:
+		```python
+		def has_cycle(dependencies: dict):
+		    if not dependencies:
+		        return False
+		
+		    visiting = set()
+		    visited = set()
+		    stack = list()
+		
+		    for start in dependencies:
+		        if start in visited:
+		            continue
+		
+		        stack.append((start, iter(dependencies.get(start, []))))
+		
+		        while stack:
+		            node, deps = stack[-1]
+		
+		            if node not in visiting:
+		                visiting.add(node)
+		
+		            try:
+		                dependency = next(deps)
+		            except StopIteration:
+		                # Finished processing this node.
+		                stack.pop()
+		                visiting.remove(node)
+		                visited.add(node)
+		                continue
+		
+		            if dependency in visiting:
+		                return True
+		
+		            if dependency in visited:
+		                continue
+		
+		            stack.append(
+		                (dependency, iter(dependencies.get(dependency, [])))
+		            )
+		
+		    return False
+		```
+		- Breakdown:
+			1. For each parent node (`start`) in the dictionary:
+				1. If `start` is in `visited`, simply continue. **This avoids duplicate processing of fully visited nodes**.
+				2. Add `start` to the stack, along with an iterator containing the node's dependencies.
+				3. While the stack is not empty:
+					1. Look at the last element in the stack, including the node and its dependencies (in the form of an iterator).
+					2. If the node is not in `visiting`, add it to `visiting`.
+					3. Try to look at the next dependency in the iterator. If there are no dependencies, remove the node from the stack, remove it from `visiting`. add it to `visited`, and continue.
+					4. If there was a dependency in the iterator, return `True` if it is in `visiting`. This indicates a cycle.
+					5. If the dependency is in `visited`, `continue`. No further processing needs to occur for that node.
+					6. Add the dependency, along with its dependencies (in the form of an iterator) to the stack.
+			- The overall point of the loop is to determine if a node that we are working on is currently in the `visiting` set.
+			- The iterator acts as a stateful way to keep track of a node's processing state while progressing through the graph, without needing to use arbitrary string values like `"enter"` or `"exit"` to keep track of this. When a `StopIteration` exception is raised, the node can be removed from both the stack and `visiting`, then added to `visited`.
+1. **Pipeline Dependency Ordering (Topological Sorting)**: Suppose you have a data pipeline with dependencies.
+	- Example:
+		```python
+		dependencies = {
+		    "extract": [], # 'extract' isn't waiting for anything to finish.
+		    "validate": ["extract"], # 'validate' is waiting for 'extract' to finish before it starts.
+		    "transform": ["validate"], # 'transform' is waiting for 'validate' to finish before it starts.
+		    "load": ["transform"], # 'load' is waiting for 'transform' to finish before it starts.
+		}
+		```
+	- A task can only run **after all of its dependencies have completed**.
+	- For example, a valid execution order for the above pipeline would be: `[extract, validate, transform, load]`. Each node in the pipeline only runs once all of its dependencies have run.
+	- Ordering doesn't necessarily have to be unique. Multiple orderings can occur when a nodes share dependencies.
+	- If the dependencies contain a cycle, return: `[]`.
+	- Write a function that returns **any valid ordering** of the pipeline tasks.
+	- Expected Result: `["extract", "validate", "transform", "load"]`
+	- **Approach**:
+		- [[#Kahn's Algorithm]]
+	- **Data Structures**:
+		- Dependency Count (Dictionary): Maps tasks to the number of remaining dependencies.
+		- Dependents (Dictionary): Maps a task to its dependencies.
+		- Queue: Tasks currently ready to execute.
+	- **Complexity**:
+		- Time: O(V + E), where V is the number of tasks (vertices) and E is the number of dependency relationships (edges). Each task and dependency relationship is processed once.
+		- Space: O(V + E) for the dependency counts, reverse dependency mapping, queue, and result.
+	- Solution:
+		```python
+		def pipeline_order(dependencies: dict):
+		    if not dependencies:
+		        return list()
+		    
+		    dependency_count = dict()
+		    dependents = dict()
+		    queued_tasks = deque()
+		    result = list()
+		
+		    # Initialize dependency_count and dependents.
+		    # dependency_count: Maps each task to the number of dependencies.
+		    # dependents: Reverse mapping of dependencies.
+		    for task, dependency_list in dependencies.items():
+		        dependency_count[task] = len(dependency_list)
+		
+		        for dependency in dependency_list:
+		            if dependency in dependents:
+		                dependents[dependency].append(task)
+		            else:
+		                dependents[dependency] = [task]
+		
+		    # Initialize queued tasks (those with a dependency count of 0).
+		    for task, count in dependency_count.items():
+		        if count == 0:
+		            queued_tasks.append(task)
+		
+		    # Process tasks in the queue.
+		    while queued_tasks:
+		        task = queued_tasks.popleft()
+		        result.append(task)
+		        
+		        for dependent_task in dependents.get(task, []):
+		            dependency_count[dependent_task] -= 1
+		
+		            if dependency_count[dependent_task] == 0:
+		                queued_tasks.append(dependent_task)
+		
+		    if len(dependencies) != len(result):
+		        return list() # Returns an empty list if there is a cycle.
+		
+		    return result
+		```
+1. **Pipeline Continuity**: Suppose you have a pipeline represented by a mapping of dependencies:
+	- Example:
+		```python
+		dependencies = {
+		    "extract": [],
+		    "clean": ["extract"],
+		    "validate": ["clean"],
+		    "transform": ["validate"],
+		    "load": ["transform"]
+		}
+		```
+	- Determine whether a task can be reached from another task.
+	- **Approach**:
+		- DFS is an appropriate choice here because you're trying to trace the lineage from one task to another. DFS traverses deeply along each lineage until the target is found or the path is exhausted.
+	- **Data Structures**:
+		- Stack (list): Used to inspect task lineage to determine if there is a link between `start` and `target`.
+		- Visited (set): Used to identify tasks within a lineage that have already been visited (avoids infinite loops caused by cycles).
+	- **Complexity**:
+		- Time: O(V + E), where V is the number of tasks (vertices) and E is the number of dependency relationships (edges). Each task and dependency relationship is processed once.
+		- Space: O(V + E) for the dependency counts, reverse dependency mapping, queue, and result.
+	- Solution:
+		```python
+		def can_reach(dependents, start, target):
+		    if not dependents:
+		        return False
+		
+		    stack = [start]
+		    visited = set()
+		
+		    while stack:
+		        task = stack.pop()
+		
+		        if task in visited:
+		            continue
+		
+		        visited.add(task)
+		
+		        if task == target:
+		            return True
+		
+		        for dependent_task in dependents.get(task, []):
+		            stack.append(dependent_task)
+		
+		    return False
+		```
+
+## Linked Lists
+
+1. Suppose you're given the head of a Linked List:
+	- Example: `A → B → C → D → None`.  You want to **find whether a particular value exists**.
+		```python
+		contains(head, "C")  # True
+		contains(head, "X")  # False
+		```
+	- This is essentially a traversal problem.
+	- **Approach**:
+		- Starting at the head, check if the current node's value is equal to the target value. If it is, return `True`. Otherwise, set the current node to the current node's `next` value. 
+	- **Data Structures**:
+		- No data structures needed, besides the input Linked List.
+	- **Complexity**:
+		- **Time:** O(n) — potentially inspect every node
+		- **Space:** O(1) — only one pointer/reference is maintained
+	- Solution:
+		```python
+		class Node:
+		    def __init__(self, value):
+		        self.value = value
+		        self.next = None
+		
+		def contains(head: Node, target: str):
+			current = head
+		
+			while current:
+				if current.value == target:
+					return True
+		
+				current = current.next
+		
+			return False
+		```
+2. **Reversing a Linked List**: Suppose you have a Linked List:
+	- Example: `A → B → C → D → None`
+	- You want to reverse the list: `D → C → B → A → None`
+	- **Approach**:
+		- Initialize `previous = None` and `current = head`.
+		- While `current` is not `None`, save `next`, reverse `current.next`, then move `current` forward.
+	- **Data Structures**:
+		- No data structures needed, besides the input list head.
+	- **Complexity**:
+		- Time: O(n), where n is the number of nodes in the list.
+		- Space: O(1), pointers need to keep track of `previous`, `current`, and `next_node`.
+	- Solution:
+		```python
+		class Node:
+		    def __init__(self, value):
+		        self.value = value
+		        self.next = None
+		
+		def reverse_list(head: Node):
+		    current = head
+		    previous = None
+		
+		    while current:
+		        next_node = current.next
+		        current.next = previous
+		        previous = current
+		        current = next_node
+		
+		    return previous
+		```
+3. **Finding The Middle Node**: Find the middle node of a Linked List.
+	- Example: `A → B → C → D → E → None`
+	- Expected Result: `C`
+	- For an even-length list: `A → B → C → D → None`
+	- Expected Result: `C`
+	- **Approach**:
+		- A straightforward solution would traverse the list twice—once to count the nodes and once to find the middle.
+		- There's another classic **O(n) time / O(1) space** approach using two pointers:
+			- `slow` moves **one node at a time**.
+			- `fast` moves **two nodes at a time**.
+		- This is done because, by the time `fast` reaches the end of the list, `slow` should be at the middle.
+	- **Data Structures**:
+		-  No data structures needed, besides the input list head.
+	- **Complexity**:
+		- Time: O(n), where n is the number of nodes in the list.
+		- Space: O(1), pointers need to keep track of `slow` and `fast`.
+	- Solution:
+		```python
+		class Node:
+		    def __init__(self, value):
+		        self.value = value
+		        self.next = None
+		
+		def find_middle(head: Node):
+		    slow = head
+		    fast = head
+		
+		    while fast and fast.next:
+		        slow = slow.next
+		        fast = fast.next.next
+		
+		    return slow
+		```
+4. **Node Removal**: Remove a node from a Linked List.
+	- Example: `A → B → C → D → None`.
+	- After removing `C`: `A → B → D → None`.
+	- **Approach**:
+		- In order to remove a node from a Linked, you need to change `current.next` to `current.next.next` for the node before the node you want to remove.
+	- **Data Structures**:
+		-  No data structures needed, besides the input list head.
+	- **Complexity**:
+		- Time: O(n), where n is the number of nodes in the list.
+		- Space: O(1), pointers need to keep track of `slow` and `fast`.
+	- Solution:
+		```python
+		def remove_node(head: Node, target: str):
+		    if not head:
+		        return None
+		
+		    if head.value == target:
+		        return head.next
+		
+		    current = head
+		
+		    while current.next:
+		        if current.next.value == target:
+		            current.next = current.next.next
+		            return head
+		
+		        current = current.next
+		
+		    return head
+		```
+
+## Dynamic Programming (DP)
+
+1. **Pipeline Processing Cost**: Suppose you have jobs with processing times:
+	- Example: `[2, 7, 3, 9, 4]`
+	- Jobs need to be processed **sequentially**. You cannot process two adjacent jobs.
+	- Your goal is to **maximize** the total processing time you can process.
+	- For example:
+		```
+		Jobs:       2   7   3   9   4
+		             ↓       ↓       ↓
+		Choice:      ✓       ✓       ✓
+		
+		Total = 2 + 3 + 4 = 9
+		```
+		- Another possibility is `Total = 7 + 9 = 16`
+	- This is a DP problem because when we're deciding whether to process job `i`, we have two choices:
+		- **Take it**: Then we cannot take job `i - 1`.
+		- **Skip it**: Then we can use the best result through job `i - 1`.
+	- The important DP question becomes: What is the best answer for the first `i` jobs?
+		- For example, `dp[0] = 2` and `dp[1] = 7`.
+		- `dp[2]` is a little bit more complicated:
+			```
+			dp[2] = max(dp[1], dp[0] + 3)
+			      = max(7, 5)
+			      = 7
+			```
+	- This represents a fundamental DP pattern: At each position, compare the best solution **if we skip the current item** with the best solution **if we take the current item**.
+	- Generally speaking:
+		```
+		dp[i] = max(
+			dp[i - 1],          # skip current job
+			dp[i - 2] + jobs[i] # take current job
+		)
+		```
+	- Suboptimal Solution:
+		```python
+		def max_processing_time(jobs):
+		    if not jobs:
+		        return 0
+		
+		    if len(jobs) == 1:
+		        return jobs[0]
+		
+		    dp = [0] * len(jobs)
+		
+		    dp[0] = jobs[0]
+		    dp[1] = max(jobs[0], jobs[1])
+		
+		    for i in range(2, len(jobs)):
+		        dp[i] = max(dp[i - 1], dp[i - 2] + jobs[i])
+		
+		    return dp[-1]
+		```
+		- `dp[i]` represents the maximum total processing time we can obtain from the first `i + 1` jobs, while never processing two adjacent jobs.
+		- That "from the first `i + 1` jobs" part is important because `dp[i]` isn't just the value of job `i`.
+		- For example:
+			```python
+			jobs = [2, 7, 3, 9]
+			dp   = [2, 7, 7, 16]
+			```
+		- `dp[3] = 16` means: Looking at jobs `0` through `3` (`2, 7, 3, 9`), the best possible total is `16`. It comes from choosing `7 + 9 = 16`.
+	- **Key DP Idea**: Define what `dp[i]` means → figure out how the current answer depends on previous answers.
+	- For this problem:
+		- `dp[i - 1]` = Best answer if we skip job `i`.
+		- `dp[i - 2] + jobs[i]` = Best answer if we take job `i`.
+		- Then choose the better one.
+	- Optimal Solution:
+		```python
+		def max_processing_time(jobs):
+		    if not jobs:
+		        return 0
+		
+		    if len(jobs) == 1:
+		        return jobs[0]
+		
+		    prev2 = jobs[0]
+		    prev1 = max(jobs[0], jobs[1])
+		
+		    for i in range(2, len(jobs)):
+		        current = max(prev1, prev2 + jobs[i])
+		        prev2 = prev1
+		        prev1 = current
+		
+		    return prev1
+		```
+		- Time: O(n), where n is the number of jobs.
+		- Space: O(1)
+		- This solution effectively maintains a **two-element sliding window over the DP results**.
+		- This is a really useful DP optimization to recognize: If `dp[i]` only depends on a fixed number of previous states, you often don't need the entire DP array.
+1. **Minimum Processing Cost**: You have a sequence of processing stages:
+	- Example: `costs = [10, 15, 20, 5, 10]`
+	- You can process either **one or two stages at a time**, and the cost of a move is the cost of the stage you **land on**. You start before stage `0` (stage `-1`) and need to reach the end.
+	- What is the minimum cost required to reach the final stage?
+	- Pattern Breakdown:
+		- Stage 0 Cost: 10. You can only land on 10.
+		- Stage 1 Cost: `min(25, 15) = 15`. You can go straight to 15, or go to 10, then 15.
+		- Stage 2 Cost: `min(10, 15) + 20 = 10 + 20 = 30`. You take the minimum of the previous 2 stages and add the current stage.
+		- Stage 3 Cost: `min(15, 30) + 5 = 15 + 5 = 20`. You take the minimum of the previous 2 stages and add the current stage.
+		- Stage 4 Cost: `min(20, 30) + 10 = 20 + 10 = 30`. You take the minimum of the previous 2 stages and add the current stage.
+		- Summary: `dp = [10, 15, 30, 20, 30]`. You take the minimum of the previous 2 stages and add the current stage.
+	- In General: `dp[i] = min(dp[i - 1], dp[i - 2]) + costs[i]`.
+	- Solution:
+		```python
+		def min_processing_cost(costs):
+			if not costs:
+				return 0
+			
+			if len(costs) == 1:
+				return costs[0]
+			
+			prev2 = costs[0]
+			prev1 = min(costs[0], costs[1])
+			
+			for i in range(2, len(costs)):
+				current = min(prev1, prev2) + costs[i]
+				prev2 = prev1
+				prev1 = current
+			
+			return prev1
+		```
+1. **Maximum Job Profit**: Suppose there is a list of jobs.
+	- Example: `jobs = [10, 20, 15, 30]`. Each job has a **profit**, and you cannot process two adjacent jobs.
+	- Define: `dp[i]` = maximum profit obtainable from jobs `0...i`.
+	- `dp = [10, 20, 25, 50]`. After initializing the first 2 elements, the decision tree looks like:
+		- Keep the current maximum (`dp[i - 1`).
+		- Add `dp[i - 2]` to the current profit.
+		- Generally: `dp[i] = max(dp[i - 1], dp[i - 2] + jobs[i])`
+	- Solution:
+		```python
+		def max_job_profit(jobs):
+			if not jobs:
+				return 0
+			
+			if len(jobs) == 1:
+				return jobs[0]
+			
+			prev2 = jobs[0]
+			prev1 = max(jobs[0], jobs[1])
+			
+			for i in range(2, len(jobs)):
+				current = max(prev1, prev2 + jobs[i])
+				prev2 = prev1
+				prev1 = current
+			
+			return prev1
+		```
+1. **Counting Ways**: Consider a data pipeline where a job can be processed in chunks of either **1 GB or 2 GB**.
+	- Example (5GB Job):
+		```
+		1 + 1 + 1 + 1 + 1
+		1 + 1 + 1 + 2
+		1 + 1 + 2 + 1
+		1 + 2 + 1 + 1
+		2 + 1 + 1 + 1
+		2 + 2 + 1
+		2 + 1 + 2
+		1 + 2 + 2
+		```
+		- 5GB can be reached in a variety of ways, as shown above. In total, there are 8 different was to reach 5GB.
+	- If `dp[i]` = number of ways to reach exactly `i` GB, then `dp[0] = 1` because there's only one way to reach 0GB (do nothing).
+	- `dp = [1, 1, 2, 3, 5, 8]`.
+	- Reasoning: `dp[i]` is the number of ways it took to reach `i - 2` plus the number of ways it took to reach `i - 1`, because you can go by increments of 1 or 2GB. `dp[i] = dp[i - 2] + dp[i - 1]`.
+	- This "look at the possible **last decision**" technique is extremely useful for recognizing counting DP problems.
+	- Solution:
+		```python
+		def count_ways(n):
+		    if n == 0:
+		        return 1
+		    if n == 1:
+		        return 1
+		
+		    prev2 = 1  # dp[0]
+		    prev1 = 1  # dp[1]
+		
+		    for i in range(2, n + 1):
+		        current = prev1 + prev2
+		        prev2 = prev1
+		        prev1 = current
+		
+		    return prev1
+		```
+1. **Maximum Non-Adjacent Revenue**: You have a sequence of daily revenues.
+	- Example: `revenues = [5, 1, 8, 4, 10, 3]`. You want to select days to run a special promotion. However, **you cannot select two consecutive days**, because the promotion requires a recovery day afterward.
+	- Return the **maximum total revenue** you can select.
+	- `dp = [5, 5, 13, 13, 23, 23]`
+	- Reasoning: `dp[i] = max(dp[i - 1], dp[i - 2] + revenues[i])`.
+	- Solution:
+		```python
+		def max_revenue(revenues):
+		    if not revenues:
+		        return 0
+		
+		    if len(revenues) == 1:
+		        return revenues[0]
+		
+		    prev2 = revenues[0]
+		    prev1 = max(revenues[0], revenues[1])
+		
+		    for i in range(2, len(revenues)):
+		        current = max(prev1, prev2 + revenues[i])
+		        prev2 = prev1
+		        prev1 = current
+		
+		    return prev1
+		```
+1. **Minimum Processing Cost**: Consider a data pipeline with jobs that have different processing costs.
+	- Example: `costs = [4, 2, 7, 1, 3]`. You need to process **exactly `n` units of work**. At each step, you can process either **1 unit or 2 units**. But now each unit has a cost, and we want the **minimum total cost** to reach the end.
+	- You can move 1 or 2 positions at a time, you need to determine the cheapest path to the final position.
+	- `dp = [4, 2, 11, 3, 6]`
+	- Solution:
+		```python
+		def min_processing_cost(costs):
+		    if not costs:
+		        return 0
+		
+		    if len(costs) == 1:
+		        return costs[0]
+		
+		    prev2 = costs[0]
+		    prev1 = min(costs[0], costs[1])
+		
+		    for i in range(2, len(costs)):
+		        current = min(prev1, prev2) + costs[i]
+		        prev2 = prev1
+		        prev1 = current
+		
+		    return prev1
 		```
 
 # Key Takeaways
@@ -1588,6 +2505,319 @@
 - Stack / Queue Types:
 	- Last In First Out (LIFO): The last item added to the stack is the first item removed.
 	- First In First Out (FIFO): The first item added to the stack is the first item removed.
+
+## Binary Search
+
+- The Binary Search algorithm only works for **sorted lists**. The basic idea is similar to the two-pointer method used in the Sliding Window pattern.
+- **Find The First Failed Partition Problem**:
+	- Think of `left` and `right` as defining the range of indices that **could still be the first failed partition**.
+	- Initially, `left = 0` and `right = len(results) -1`. This makes every index a candidate.
+	- At each iteration: `mid = (left + right) // 2`.
+	- If `results[mid] == 1`, `mid` could be the first failure, so you can't discard it. The list is sorted, so everything **to the right of `mid`** cannot be the first failure, because `mid` is already a failure. Therefore: `right = mid`.
+	- If `result[mid] == 0`, `mid` cannot be the first failure, so you can discard it. The list is sorted, so everything to the left of `mid` is also potentially `0`, the first failure must be **to the right**. Therefore: `left = mid + 1`.
+	- Overall Pattern:
+		- `results[mid] == 1`:
+			- Keep mid
+			- Search left
+			- `right = mid`
+		- `results[mid] == 0`:
+			- Discard mid
+			- Search right
+			- `left = mid + 1`
+	- A `0` being to the left of `1` doesn't automatically qualify it as the first failure, because the first `1` could be at index 0. A cleaner way to think about the goal is: Find the **leftmost index whose value is 1**. This is the standard "find first occurrence" binary-search pattern.
+	- Guiding Principle: `left` and `right` represent the range containing all remaining possible answers. The answer, if one exists, is always somewhere between `left` and `right`.
+	- Complexity:
+		- Time: O(log(n)), where n is the number of elements in the list.
+		- Space: O(1). There's no need to keep track of anything with a list or a dictionary.
+- **Data Quality Threshold Problem**:
+	- Since this algorithm looks for the **rightmost** qualifying value instead of the leftmost qualifying value, using `mid = (left + right + 1) // 2` can result in an infinite loop.
+	- **Edge Case Example**:
+		```python
+		memory_usage = [100, 150, 220, 310, 450, 700, 1000]
+		limit = 450
+		```
+		- Eventually, you'll get `left = 3` and `right = 4`.
+		- This means `mid = (left + right) // 2 = 3`.
+		- Using the **upper midpoint**, `mid = (left + right + 1) // 2 = 4`. Now, `memory_usage[4] = 450`, which is valid.
+- **Find first (leftmost) value satisfying condition**:
+	```python
+	# ...
+	mid = (left + right) // 2
+	# ...
+	if condition(mid):
+	    right = mid
+	else:
+	    left = mid + 1
+	```
+- **Find last (rightmost) value satisfying condition**:
+	```python
+	# ...
+	mid = (left + right + 1) // 2
+	# ...
+	if condition(mid):
+	    left = mid
+	else:
+	    right = mid - 1
+	```
+
+## Trees / Graphs
+
+- A tree is essentially a hierarchy. For example:
+	```
+	             extract
+	            /       \
+	      validate      transform
+	        /              \
+	    schema            aggregate
+	```
+	- This represents a data pipeline.
+	- The **edges** represent dependencies between **nodes**. Each node represents a pipeline task.
+		- In this example, the "extract" node is the parent node for the tree and has "validate" and "transform" as dependencies.
+		- The "validate" node is a parent node and has a "schema" dependency.
+		- The "transform" node is a parent node and has a "aggregate" dependency.
+- There are two basic ways to explore a tree: Depth-First Search (DFS) and Breadth-First Search (BFS).
+- **Deepest Pipeline Dependency Problem**: BFS is the best approach for this problem because it asks for the **deepest** dependency. BFS traversal ensures that the last level encountered is the deepest level.
+
+| Problem                        | Approach                            |
+| ------------------------------ | ----------------------------------- |
+| Find whether a path exists     | DFS/BFS                             |
+| Detect a cycle                 | DFS + `visiting`/`visited`          |
+| Produce valid dependency order | Kahn's algorithm / topological sort |
+
+### Kahn's Algorithm
+- **Pipeline Dependency Ordering Problem**:
+	- Topological sorting can be used to detect cycles without explicitly tracking a DFS path. This is commonly called **Kahn's algorithm**.
+	- Instead of storing the actual remaining dependencies, maintain an **in-degree count**: `task → number of dependencies that haven't been processed`.
+	- For:
+		```python
+		{
+		    "extract": [],
+		    "validate": ["extract"],
+		    "transform": ["validate"],
+		    "load": ["transform"]
+		}
+		```
+	- We'd have:
+		```
+		extract   → 0
+		validate  → 1
+		transform → 1
+		load      → 1
+		```
+		- Any task with a count of 0 is ready to run, so it's placed in a **queue**.
+	- When a task is processed, we also need the reverse mapping to see who is waiting for the task:
+		```python
+		{
+			"extract": ["validate"],
+			"validate": ["transform"],
+			"transform": ["load"]
+		}
+		```
+	- Suppose we process `extract`. `validate` depends on `extract`, so we decrement its count: `validate: 1 → 0`. The mapping allows us to decrement dependency counts for all of extract's dependencies. In this case, it's just `"validate"`.
+	- Now `validate` is ready, so we add it to the queue. Then `transform` becomes ready, then `load` becomes ready.
+- Basic Process:
+	1. Find all tasks with 0 dependencies.
+	2. Put them in a queue.
+	3. Remove a task from the queue.
+	4. Add it to the result.
+	5. Decrement the dependency count of every task that depends on it.
+	6. Any task whose count reaches 0 goes into the queue.
+	7. Repeat.
+- When the algorithm is finished, if `len(result) < len(dependencies)`, it means some tasks could never be processed.
+- Those remaining tasks must be part of a dependency cycle (or depend on one), so we return: `[]`.
+
+### Depth-First Search (DFS)
+- DFS means "go as deep as possible before coming back."
+- Starting at `extract`:
+	```
+				 extract  ← start
+				/
+		  validate
+			/
+		schema  ← go all the way down
+	```
+- Once we reach `schema`, there are no more children, so we go back up:
+	```
+				 extract
+				/
+		  validate
+			\
+			schema  ← finished
+	```
+- Then we go back to `extract` and explore the other branch:
+	```
+				 extract
+						   \
+						  transform
+							   \
+							 aggregate
+	```
+- So one possible DFS order is:
+	```
+	extract
+	validate
+	schema
+	transform
+	aggregate
+	```
+- **Key Idea**: DFS follows one branch all the way down before exploring the next branch.
+- DFS is commonly implemented with either recursion, or a **stack**. For example:
+	```python
+	stack = [root]
+	
+	while stack:
+	    node = stack.pop()
+	    # process node
+	    # add children to stack
+	```
+	- DFS itself doesn't inherently require recursion. **A stack is the data structure that lets you implement DFS iteratively**.
+	- The stack provides the "last thing added is the next thing explored" behavior.
+
+### Breadth-First Search (BFS)
+- BFS means "explore one level at a time."
+- Starting at `extract`:
+	```
+	Level 0:
+	             extract
+	```
+- Then all of its children:
+	```
+	Level 1:
+	      validate      transform
+	```
+- Then all of their children:
+	```
+	Level 2:
+	    schema          aggregate
+	```
+- So one possible BFS order is:
+	```
+	extract
+	validate
+	transform
+	schema
+	aggregate
+	```
+- **Key Idea**: BFS completely processes one level before moving to the next level.
+- BFS is commonly implemented with a **queue**: For example:
+	```python
+	queue = [root]
+	
+	while queue:
+	    node = queue.pop(0)
+	    # process node
+	    # add children to queue
+	```
+	- In Python, you'd normally use `collections.deque` rather than `pop(0)` because the former has a lower time complexity.
+
+### DFS vs. BFS
+- The easiest way to remember them:
+	- DFS = Depth First. Go **down** before going across.
+		- Typically implemented using a **stack (LIFO)**. Explore one path deeply before moving to the next.
+	- BFS = Breath First. Go **across** before going down.
+		- Typically implemented using a **queue (FIFO)**. Explore everything at the current level before going deeper.
+- Visualized:
+	```
+	             A
+	           /   \
+	          B     C
+	         / \   / \
+	        D   E F   G
+	```
+	- DFS: `A → B → D → E → C → F → G`
+	- BFS: `A → B → C → D → E → F → G`
+- Complexity:
+	- Both DFS and BFS offer Time and Space complexity of O(n), where n is the number of nodes. The Space Complexity of O(n) is the worst-case scenario.
+
+### Graph Traversal
+- `visited` (set): Nodes that have been completely processed.
+- `visiting` (set): Nodes currently on the DFS path.
+- When entering a node: `visiting.add(node)`
+- When **completely** finished with a node:
+	```python
+	visiting.remove(node)
+	visited.add(node)
+	```
+- While exploring a node's dependencies:
+	```
+	dependency in visiting
+	    → cycle!
+	```
+	- This distinction is important because encountering a node in `visited` **doesn't necessarily mean there's a cycle**.
+- DFS is useful because cycle detection depends on identifying whether an edge points back to a node on the current traversal path.
+
+### Iterators
+- An iterator is an object that remembers where you are while going through a sequence, and gives you the next item whenever you ask for it.
+- A normal for loop already uses an iterator under the hood:
+	```python
+	"""
+	Using a for loop
+	"""
+	
+	dependencies = ["B", "C", "D"]
+	
+	for dependency in dependencies:
+	    print(dependency)
+	
+	"""
+	Using an iterator
+	"""
+	
+	iterator = iter(dependencies)
+	
+	while True:
+	    try:
+	        dependency = next(iterator)
+	        print(dependency)
+	    except StopIteration:
+	        break
+	```
+- An iterator is like a queue. The `next()` method removes the first item from the collection.
+- The main advantage of an iterator is that it's **stateful**. It remembers where it left off when it was last called.
+- When an iterator is empty, `next()` raises `StopIteration`.
+- Iterators are useful for implementing **iterative DFS** because they help mimic the recursive nature of the typical implementation. The iterator maintains its state **across iterations of the for loop** in an iterative DFS implementation.
+- Think of an iterator as a bookmark in a sequence. If you're reading multiple books at the same time, an iterator is like a bookmark that allows you to put one book down, start reading another book, then come back and pick up where you left off.
+
+### Interview Takeaway
+| Problem                 | Natural approach | Why                                                                                                       |
+| ----------------------- | ---------------- | --------------------------------------------------------------------------------------------------------- |
+| Deepest task            | BFS              | Traverses by level                                                                                        |
+| Find task               | DFS              | Search until target found                                                                                 |
+| Maximum depth           | BFS or DFS       | Either can track depth                                                                                    |
+| Cycle Detection (Graph) | DFS              | You need to determine the relationship between <br>parents and children, not traverse the graph by level. |
+- The important lesson isn't "always use BFS for depth" or "always use DFS for search." **Both traversals can often solve the same problem.**
+- You should choose based on which makes the state and termination conditions easiest to reason about.
+
+## Linked Lists
+
+- A Singly-Linked List looks like: `A → B → C → D → None`. Each node in the list contains the following:
+	```python
+	class Node:
+	    def __init__(self, value):
+	        self.value = value
+	        self.next = None
+	```
+- So if we have:
+	```python
+	a = Node("A")
+	b = Node("B")
+	c = Node("C")
+	
+	a.next = b
+	b.next = c
+	```
+- The Linked List will look like:
+	```
+	a
+	↓
+	A → B → C → None
+	```
+- The important difference from a Python list is that the nodes aren't stored next to each other in some indexed sequence. Each node simply holds a **reference to the next node**.
+
+## Dynamic Programming (DP)
+
+- **Key DP Idea**: Define what `dp[i]` means → figure out how the current answer depends on previous answers.
+- Useful DP Optimization Principle:  If `dp[i]` only depends on a fixed number of previous states, you often don't need the entire DP array.
 
 # Interview Preparation Topics
 

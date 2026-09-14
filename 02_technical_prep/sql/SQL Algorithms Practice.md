@@ -450,8 +450,8 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		- `order_id`: INT
 		- `payment_date`: DATE (YYYY-MM-DD)
 		- `amount`: INT
-	- Too fucking stupid to think of anything useful.
-	- Brilliant Solution:
+	- **Unable to come up with solution**.
+	- Given Solution:
 		```sql
 		WITH payment_totals AS (
 		    SELECT
@@ -607,8 +607,8 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		- `oder_date`: DATE (YYYY-MM-DD)
 		- `amount`: INT
 		- `status`: VARCHAR(30)
-	- Too fucking stupid to think of anything useful.
-	- Brilliant Solution:
+	- **Unable to come up with solution**.
+	- Given Solution:
 		```sql
 		WITH monthly_orders AS (
 		    SELECT
@@ -801,6 +801,153 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 			2. Find quarterly statistics (`revenue` and `order_count`) by grouping by `customer_id` and `sales_quarter`.
 			3. Find annual statistics (`revenue`, `highest_quarter_revenue`, and `order_count`) by grouping quarter statistics by `customer_id`.
 			4. Join with `customers` table to retrieve `customer_name`, calculate `highest_quarter_percentage`, and apply appropriate filters using `WHERE`.
+1. Find customers who, during **2026**:
+	- Have completed orders in at least **5 different months**.
+	- Have an average monthly completed revenue of at least **$500**.
+	- Their **most recent active month** has higher revenue than their **previous active month**.
+	- Their previous active month has higher revenue than the active month before that.
+	- Requirements:
+		- "Recent month" means **most recent active month**, not necessarily the calendar month immediately preceding it.
+		- Only completed orders from 2026 count.
+		- If a customer has activity in January, March, April, June, and August, their recent three active months are **April, June, August**.
+		- The three recent active months **do not have to be consecutive calendar months**.
+		- Customers still need at least **5 active months** overall.
+		- The revenue trend must be strictly increasing across the three most recent active months.
+	- Return: `customer_id | most_recent_month | most_recent_revenue | previous_month_revenue | third_recent_month_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH customer_revenue AS (
+		    SELECT
+		        customer_id,
+		        DATE_FORMAT(order_date, '%Y-%m') AS order_month,
+		        SUM(amount) AS monthly_revenue
+		    FROM orders
+		    WHERE YEAR(order_date) = 2026 AND status = 'completed'
+		    GROUP BY
+		        customer_id,
+		        DATE_FORMAT(order_date, '%Y-%m')
+		),
+		monthly_history AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        monthly_revenue,
+		        LAG(monthly_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_month_revenue,
+		        LAG(monthly_revenue, 2) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS third_recent_month_revenue
+		    FROM customer_revenue
+		),
+		customer_stats AS (
+		    SELECT
+		        customer_id,
+		        MAX(order_month) AS most_recent_month
+		    FROM customer_revenue
+		    GROUP BY customer_id
+		    HAVING
+		        COUNT(order_month) >= 5
+		        AND AVG(monthly_revenue) >= 500
+		)
+		
+		SELECT
+		    t1.customer_id,
+		    t1.most_recent_month,
+		    t2.monthly_revenue AS most_recent_revenue,
+		    t2.previous_month_revenue,
+		    t2.third_recent_month_revenue
+		FROM customer_stats t1
+		JOIN monthly_history t2
+		    ON t1.customer_id = t2.customer_id
+		WHERE t1.most_recent_month = t2.order_month
+		    AND t2.monthly_revenue > t2.previous_month_revenue
+		    AND t2.previous_month_revenue > t2.third_recent_month_revenue;
+		```
+		- The `customer_stats` CTE was used instead of including the aggregations as window functions in the `monthly_history` CTE because it's cleaner and more efficient. You only really need `most_recent_month`, so using the other columns as strictly as filter predicates in `HAVING` is more efficient than including them as columns when they aren't used in the final result.
+1. Find customers who, during **2026**:
+	- Have at least **4 completed orders**
+	- Their completed order amounts are **strictly decreasing** over time
+	- The comparison is between **individual orders**
+	- If two orders have the same `order_date`, the larger `order_id` is considered later
+	- Return: `customer_id | completed_order_count | latest_order_date | latest_order_amount | first_order_amount`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH orders_with_previous AS (
+		    SELECT
+		        customer_id,
+		        order_id,
+		        order_date,
+		        amount,
+		        LAG(amount) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_date, order_id
+		        ) AS previous_order_amount,
+		
+		        FIRST_VALUE(amount) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_date, order_id
+		        ) AS first_order_amount,
+		
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_date DESC, order_id DESC
+		        ) AS date_rnk
+		
+		    FROM orders
+		    WHERE
+		        YEAR(order_date) = 2026
+		        AND status = 'completed'
+		),
+		
+		customer_validation AS (
+		    SELECT
+		        customer_id,
+		        COUNT(*) AS completed_order_count,
+		        SUM(
+		            CASE
+		                WHEN previous_order_amount IS NOT NULL
+		                     AND amount >= previous_order_amount
+		                THEN 1
+		                ELSE 0
+		            END
+		        ) AS violation_count
+		    FROM orders_with_previous
+		    GROUP BY
+		        customer_id,
+		        completed_order_count
+		)
+		
+		SELECT
+		    o.customer_id,
+		    o.completed_order_count,
+		    o.order_date AS latest_order_date,
+		    o.amount AS latest_order_amount,
+		    o.first_order_amount
+		FROM orders_with_previous o
+		JOIN customer_validation c
+		    ON o.customer_id = c.customer_id
+		WHERE
+		    o.date_rnk = 1
+		    AND o.completed_order_count >= 4
+		    AND c.violation_count = 0;
+		```
+		- Very useful pattern for finding strictly increasing / decreasing values.
+		- Using `WHERE amount < previous_amount` tests each row **individually**. It doesn't test a continuous pattern across each customer's set of orders.
 
 ## Conditional Aggregation Problems
 
