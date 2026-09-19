@@ -948,6 +948,332 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		```
 		- Very useful pattern for finding strictly increasing / decreasing values.
 		- Using `WHERE amount < previous_amount` tests each row **individually**. It doesn't test a continuous pattern across each customer's set of orders.
+1. Find customers who, during **2026**:
+	- Have completed orders in at least **6 active months**
+	- Have an **average monthly completed revenue** of at least **$1,000**
+	- For every active month **after their first active month**, monthly revenue is at least **90% of the previous active month's revenue**
+		- Active months **do not** need to be consecutive.
+	- Have at least **one month with monthly revenue ≥ $1,500**
+	- Return the **most recent active month** and its revenue
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_order_stats AS (
+		    SELECT
+		        customer_id,
+		        EXTRACT(MONTH FROM order_date) AS order_month,
+		        SUM(amount) AS monthly_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        EXTRACT(MONTH FROM order_date)
+		),
+		customer_stats AS (
+		    SELECT
+		        customer_id,
+		        COUNT(*) AS active_month_count,
+		        COUNT(
+		            CASE
+		                WHEN monthly_revenue >= 1500 THEN order_month
+		            END
+		        ) AS high_value_month_count,
+		        AVG(monthly_revenue) AS avg_monthly_revenue
+		    FROM monthly_order_stats
+		    GROUP BY customer_id
+		),
+		previous_monthly_revenue AS (
+		    SELECT
+		        cs.customer_id,
+		        cs.active_month_count,
+		        cs.avg_monthly_revenue,
+		        mos.order_month,
+		        mos.monthly_revenue,
+		        LAG(mos.monthly_revenue) OVER (
+		            PARTITION BY cs.customer_id
+		            ORDER BY mos.order_month
+		        ) AS previous_month_revenue
+		    FROM monthly_order_stats mos
+		    JOIN customer_stats cs
+		        ON mos.customer_id = cs.customer_id
+		    WHERE
+		        cs.active_month_count >= 6
+		        AND cs.avg_monthly_revenue >= 1000
+		        AND cs.high_value_month_count >= 1
+		),
+		qualifying_revenues AS (
+		    SELECT
+		        *,
+		        SUM(
+		            CASE
+		                WHEN
+		                    previous_month_revenue IS NOT NULL
+		                    AND monthly_revenue < 0.9 * previous_month_revenue
+		                THEN 1
+		                ELSE 0
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		        ) AS violation_count
+		    FROM previous_monthly_revenue
+		),
+		qualifying_customers AS (
+		    SELECT
+		        customer_id,
+		        active_month_count,
+		        avg_monthly_revenue,
+		        order_month,
+		        monthly_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS date_rnk
+		    FROM qualifying_revenues
+		    WHERE violation_count = 0
+		)
+		
+		SELECT
+		   customer_id,
+		   active_month_count,
+		   avg_monthly_revenue,
+		   order_month AS latest_active_month,
+		   monthly_revenue AS latest_month_revenue
+		FROM qualifying_customers
+		WHERE date_rnk = 1;
+		```
+		1. If active months needed to be consecutive:
+			```sql
+			-- Detect where a streak begins:
+			CASE
+			    WHEN previous_month IS NULL
+			         OR order_month != previous_month + 1
+			    THEN 1
+			    ELSE 0
+			END AS new_streak
+			
+			-- Turn that into a streak ID
+			SUM(new_streak) OVER (
+			    PARTITION BY customer_id
+			    ORDER BY order_month -- Creates a running sum for each customer.
+			) AS streak_group_id
+			
+			-- Group by customer_id and streak_group_id
+			GROUP BY
+			    customer_id,
+			    streak_group_id
+			
+			-- Calculate the strak length
+			COUNT(*) AS streak_length
+			
+			-- A customer would qualify when:
+			MAX(streak_length) >= 6
+			```
+1. Find customers who, during **2026**, satisfy **all** of the following:
+	- Have at least **6 active months** with completed orders.
+	- Their **average monthly completed revenue** is at least **$1,000**.
+	- Their monthly revenue is **non-decreasing** across all consecutive active months.
+	- There is at least **one month where revenue is exactly equal to the previous active month**.
+	- Their **latest active month** has revenue of at least **$1,500**.
+	- Return the **most recent month where revenue was equal to the previous active month**: `customer_id | active_month_count | avg_monthly_revenue | latest_active_month | latest_month_revenue | most_recent_flat_month | flat_month_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+		    -- Filter for 2026 completed orders.
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_stats AS (
+		    -- Calculate total revenue for each customer and month.
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+		    -- Add customer-level stats to customer-month revenue.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        LAG(order_month) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_month,
+		        LAG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        AVG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS avg_monthly_revenue
+		    FROM monthly_stats
+		),
+		non_decreasing_revenue AS (
+		    -- Establish non-decreasing revenue streaks.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        (
+		            CASE
+		                WHEN
+		                    order_month = DATE_ADD(previous_month, INTERVAL 1 MONTH)
+		                    AND total_revenue >= previous_revenue
+		                THEN 0
+		                ELSE 1
+		            END
+		        ) AS new_streak
+		    FROM customer_stats
+		    WHERE
+		        active_month_count >= 6
+		        AND avg_monthly_revenue >= 1000
+		),
+		revenue_streak AS (
+		    -- Determine streak ID for each revenue streak.
+		    SELECT
+		        customer_id,
+		        SUM(new_streak) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS streak_id
+		    FROM non_decreasing_revenue
+		),
+		consistent_revenue AS (
+		    -- Determine the number of revenue streaks per customer.
+		    SELECT
+		        customer_id,
+		        COUNT(DISTINCT streak_id) AS streak_count
+		    FROM revenue_streak
+		    GROUP BY
+		        customer_id
+		),
+		consistent_customers AS (
+		    -- Find customers with 6 active months, avg_monthly_revenue of at least 1000, and 1 continuous revenue streak.
+		    SELECT
+		        cs.customer_id,
+		        cs.order_month,
+		        cs.total_revenue,
+		        cs.previous_month,
+		        cs.previous_revenue,
+		        cs.active_month_count,
+		        cs.avg_monthly_revenue,
+		        (
+		            CASE
+		                WHEN cs.previous_revenue = cs.total_revenue THEN 1
+		                ELSE 0
+		            END
+		        ) AS flat_month
+		    FROM customer_stats cs
+		    JOIN consistent_revenue cr
+		        ON cs.customer_id = cr.customer_id
+		    WHERE
+		        cs.active_month_count >= 6
+		        AND cs.avg_monthly_revenue >= 1000
+		        AND cr.streak_count = 1
+		),
+		active_month_rnk AS (
+		    -- Rank active months in descending order.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS rnk
+		    FROM consistent_customers
+		),
+		flat_month_rnk AS (
+		    -- Rank flat months in descending order.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS rnk
+		    FROM consistent_customers
+		    WHERE flat_month = 1
+		),
+		recent_active_month AS (
+		    -- Find the most recent active month.
+		    SELECT
+		        customer_id,
+		        order_month AS latest_active_month,
+		        total_revenue AS latest_month_revenue
+		    FROM active_month_rnk
+		    WHERE
+			    rnk = 1
+			    AND total_revenue >= 1500
+		),
+		recent_flat_month AS (
+		    -- Find the most recent flat month.
+		    SELECT
+		        customer_id,
+		        order_month AS most_recent_flat_month,
+		        total_revenue AS flat_month_revenue
+		    FROM flat_month_rnk
+		    WHERE rnk = 1
+		)
+		
+		SELECT
+		    cs.customer_id,
+		    cs.active_month_count,
+		    cs.avg_monthly_revenue,
+		    ram.latest_active_month,
+		    ram.latest_month_revenue,
+		    rfm.most_recent_flat_month,
+		    rfm.flat_month_revenue
+		FROM (
+		    SELECT DISTINCT
+		        customer_id,
+		        active_month_count,
+		        avg_monthly_revenue
+		    FROM consistent_customers
+		) AS cs
+		JOIN recent_active_month ram
+		    ON cs.customer_id = ram.customer_id
+		JOIN recent_flat_month rfm
+		    ON cs.customer_id = rfm.customer_id;
+		```
+		- The problem technically only required consecutive *active* months, not consecutive *calendar* months. However, this was still a good demonstration of how to a consecutive month streak of arbitrary length (without creating a bunch of columns for each month).
 
 ## Conditional Aggregation Problems
 
@@ -1394,6 +1720,296 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		```
 		- Interesting case of using `EXISTS / NOT EXISTS` with conditional aggregation.
 		- The second join condition is needed because `valid_customers` only filters for **customers** based on 2026 orders. **It doesn't actually filter orders based on the year**.
+1. Find customers who, during **2026**:
+	- Have at least **6 completed orders** overall.
+	- Have completed orders in **at least 3 different quarters**.
+	- Have **at least one quarter** where:
+	    - They completed at least **3 orders**, and
+	    - Their quarterly revenue was at least **$2,000**.
+	- Their **latest completed order** occurred in a quarter where that customer had at least **3 completed orders**.
+	- If two orders have the same `order_date`, the larger `order_id` is considered later.
+	- Return: `customer_id | completed_order_count | active_quarters | strong_quarter | strong_quarter_revenue | latest_order_date | latest_order_amount`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+			SELECT
+				order_id,
+				customer_id,
+				order_date,
+				amount,
+				EXTRACT(QUARTER FROM order_date) AS qtr
+			FROM orders
+			WHERE
+				order_date >= '2026-01-01'
+				AND order_date < '2027-01-01'
+				AND status = 'completed'
+		),
+		order_counts AS (
+			SELECT
+				*,
+				COUNT(*) OVER (
+					PARTITION BY customer_id
+				) AS completed_order_count
+			FROM filtered_orders
+		),
+		qtr_metrics AS (
+			SELECT
+				customer_id,
+				qtr,
+				COUNT(*) AS qtr_order_count,
+				SUM(amount) AS qtr_revenue
+			FROM order_counts
+			GROUP BY
+				customer_id,
+				qtr
+		),
+		active_quarters AS (
+		    SELECT
+		        customer_id,
+		        qtr,
+		        qtr_order_count,
+		        qtr_revenue
+		    FROM qtr_metrics
+		    WHERE qtr_order_count >= 3
+		),
+		customer_metrics AS (
+			SELECT
+				customer_id,
+				COUNT(*) AS active_quarters
+			FROM active_quarters
+			GROUP BY customer_id
+		),
+		eligible_orders AS (
+			SELECT
+				oc.order_id,
+				oc.customer_id,
+				oc.order_date,
+				oc.amount,
+				oc.qtr,
+				oc.completed_order_count,
+				qm.qtr_order_count,
+				qm.qtr_revenue,
+				cm.active_quarters
+			FROM order_counts oc
+			JOIN qtr_metrics qm
+				ON oc.customer_id = qm.customer_id
+				AND oc.qtr = qm.qtr
+			JOIN customer_metrics cm
+				ON oc.customer_id = cm.customer_id
+			WHERE
+				oc.completed_order_count >= 6
+				AND qm.qtr_order_count >= 3
+		),
+		latest_orders AS (
+			SELECT
+				*,
+				ROW_NUMBER() OVER (
+					PARTITION BY customer_id
+					ORDER BY order_date DESC, order_id DESC
+				) AS date_rnk
+			FROM eligible_orders
+		),
+		strong_quarters AS (
+			SELECT
+				customer_id,
+				qtr AS strong_quarter,
+				qtr_revenue AS strong_quarter_revenue,
+				ROW_NUMBER() OVER (
+					PARTITION BY customer_id
+					ORDER BY qtr DESC
+				) AS strong_qtr_rnk
+			FROM qtr_metrics
+			WHERE
+				qtr_order_count >= 3
+				AND qtr_revenue >= 2000
+		)
+		
+		SELECT
+			lo.customer_id,
+			lo.completed_order_count,
+			lo.active_quarters,
+			sq.strong_quarter,
+			sq.strong_quarter_revenue,
+			lo.order_date AS latest_order_date,
+			lo.amount AS latest_order_amount
+		FROM latest_orders lo
+		JOIN strong_quarters sq
+			ON lo.customer_id = sq.customer_id
+			AND sq.strong_qtr_rnk = 1
+		WHERE lo.date_rnk = 1;
+		```
+		1. Filter orders by year and order status.
+		2. Calculate completed order count for each customer.
+		3. Calculate quarterly metrics (order count and total revenue) for each customer.
+		4. Calculate customer metrics (number of quarters with at least 3 orders).
+		5. Join tables together, filtering for customers with at least 6 completed orders and quarters with at least 3 orders.
+		6. Find the latest eligible order using `ROW_NUMBER()`.
+		7. Find strong quarters (quarters with an order count of at least 3 and a revenue of at least 2000). Find the latest 'strong quarter' using `ROW_NUMBER()`.
+		8. Join tables and filter for rankings of 1 for the latest eligible order and latest strong quarter.
+1. Find customers who, during **2026**:
+	- Have at least **6 active months** with completed orders.
+	- Have at least **one active month where monthly revenue is below $500**.
+	- After that low-revenue month, their **immediately next active month** has revenue at least **50% higher** than the low-revenue month.
+	- Their latest active month has revenue of at least **$1,000**.
+	- If multiple recovery patterns exist, return the **most recent recovery**.
+	- "Next month" means the **next active month**, not necessarily the next calendar month.
+	- Return: `customer_id | active_month_count | recovery_month | low_month_revenue | recovery_month_revenue | latest_active_month | latest_month_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+		    SELECT
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_revenue AS (
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		monthly_stats AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        COUNT(
+		            CASE
+		                WHEN total_revenue < 500
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		        ) AS low_revenue_month_count
+		    FROM monthly_revenue
+		),
+		revenue_trends AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        LAG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_revenue
+		    FROM monthly_stats
+		    WHERE
+		        active_month_count >= 6
+		        AND low_revenue_month_count >= 1
+		),
+		qualifying_trends AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        previous_revenue,
+		        (
+		            CASE
+		                WHEN
+		                    previous_revenue IS NOT NULL
+		                    AND previous_revenue < 500
+		                    AND total_revenue >= 1.5 * previous_revenue
+		                THEN 1
+		                ELSE 0
+		            END
+		        ) AS qualifying_trend
+		    FROM revenue_trends
+		),
+		customer_revenue AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        previous_revenue,
+		        qualifying_trend,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS date_rnk
+		    FROM qualifying_trends
+		),
+		trend_revenue AS (
+		    SELECT
+		        customer_id,
+		        order_month,
+		        previous_revenue,
+		        total_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS trend_rnk
+		    FROM qualifying_trends
+		    WHERE qualifying_trend = 1
+		),
+		latest_month AS (
+		    SELECT
+		        customer_id,
+		        order_month AS latest_active_month,
+		        total_revenue AS latest_month_revenue
+		    FROM customer_revenue
+		    WHERE
+		        date_rnk = 1
+		        AND total_revenue >= 1000
+		),
+		latest_trend AS (
+		    SELECT
+		        customer_id,
+		        order_month AS recovery_month,
+		        previous_revenue AS low_month_revenue,
+		        total_revenue AS recovery_month_revenue
+		    FROM trend_revenue
+		    WHERE trend_rnk = 1
+		)
+		
+		SELECT
+		    cr.customer_id,
+		    cr.active_month_count,
+		    lt.recovery_month,
+		    lt.low_month_revenue,
+		    lt.recovery_month_revenue,
+		    lm.latest_active_month,
+		    lm.latest_month_revenue
+		FROM (
+		    SELECT DISTINCT
+		        customer_id,
+		        active_month_count
+		    FROM customer_revenue
+		) cr
+		JOIN latest_month lm
+		    ON cr.customer_id = lm.customer_id
+		JOIN latest_trend lt
+		    ON cr.customer_id = lt.customer_id;
+		```
+		- This is an interesting case where we needed to perform rankings based on two separate conditions. We couldn't filter for the rankings in the same `WHERE` clause because it wouldn't necessarily produce the correct results.
+		- Using `trend_revenue` to filter for `qualifying_trend = 1` was simpler than trying to use conditional aggregation with `ROW_NUMBER()`.
+		- The `SELECT DISTINCT` subquery is necessary because `customer_revenue` has one row per customer-month, not one row per customer.
+		- It's better to use `SUM` than `COUNT` when using conditional aggregation to count rows based on a boolean condition.
 
 ## EXISTS / NOT EXISTS Problems
 
