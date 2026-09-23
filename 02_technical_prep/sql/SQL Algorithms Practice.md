@@ -1274,6 +1274,604 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		    ON cs.customer_id = rfm.customer_id;
 		```
 		- The problem technically only required consecutive *active* months, not consecutive *calendar* months. However, this was still a good demonstration of how to a consecutive month streak of arbitrary length (without creating a bunch of columns for each month).
+1. Find customers who, during **2026**, satisfy all of the following:
+	- Have at least **6 active months** with completed orders.
+	- Their **average monthly completed revenue** is at least **$1,000**.
+	- Have at least **3 consecutive active months** where monthly revenue is **strictly increasing**.
+	- The revenue in the **third month** of that increasing sequence is at least **25% greater** than the first month.
+	- Their **latest active month** must be the **end of a qualifying increasing sequence**.
+	- If multiple qualifying sequences end in the latest active month, return the **longest qualifying sequence**.
+	- Return the start and end month/revenue of that sequence: `customer_id | active_month_count | avg_monthly_revenue | sequence_start_month | sequence_start_revenue | sequence_end_month | sequence_end_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+			-- Filter orders based on order date and status (2026 completed orders).
+			SELECT
+				order_id,
+				customer_id,
+				order_date,
+				amount
+			FROM orders
+			WHERE
+				order_date >= '2026-01-01'
+				AND order_date < '2027-01-01'
+				AND status = 'completed'
+		),
+		monthly_stats AS (
+			-- Calculate total revenue for each customer month.
+			SELECT
+				customer_id,
+				DATE_TRUNC('month', order_date) AS order_month,
+				SUM(amount) AS total_revenue
+			FROM filtered_orders
+			GROUP BY
+				customer_id,
+				DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+			-- Calculate active month count, average monthly revenue, and last active month per customer.
+			SELECT
+				customer_id,
+				order_month,
+				total_revenue,
+				COUNT(*) OVER (
+					PARTITION BY customer_id
+				) AS active_month_count,
+				AVG(total_revenue) OVER (
+					PARTITION BY customer_id
+				) AS avg_monthly_revenue,
+				LAG(order_month) OVER (
+					PARTITION BY customer_id
+					ORDER BY order_month
+				) AS previous_month,
+				LAG(total_revenue) OVER (
+					PARTITION BY customer_id
+					ORDER BY order_month
+				) AS previous_revenue,
+				MAX(order_month) OVER (
+					PARTITION BY customer_id
+				) AS last_active_month
+			FROM monthly_stats
+		),
+		revenue_trends AS (
+			-- Identify months that represent the start of a valid streak (for customers with
+			-- at least 6 active months and $1,000 in average monthly revenue).
+			SELECT
+				customer_id,
+				order_month,
+				(
+					CASE
+						WHEN
+							order_month = DATE_ADD(previous_month, INTERVAL 1 MONTH)
+							AND total_revenue > previous_revenue
+						THEN 0
+						ELSE 1
+					END
+				) AS new_streak
+			FROM customer_stats
+			WHERE
+				active_month_count >= 6
+				AND avg_monthly_revenue >= 1000
+		),
+		revenue_streaks AS (
+			-- Identify each valid revenue streak for each valid customer.
+			SELECT
+				customer_id,
+				order_month,
+				SUM(new_streak) OVER (
+					PARTITION BY customer_id
+					ORDER BY order_month
+				) AS streak_id
+			FROM revenue_trends
+		),
+		revenue_streak_stats AS (
+			-- identify length, start month, and end month for streaks with at least 3 months.
+			SELECT
+				customer_id,
+				streak_id,
+				COUNT(order_month) AS sequence_length,
+				MIN(order_month) AS sequence_start_month,
+				MAX(order_month) AS sequence_end_month
+			FROM revenue_streaks
+			GROUP BY
+				customer_id,
+				streak_id
+			HAVING COUNT(order_month) >= 3
+		),
+		customer_revenue_streaks AS (
+			-- Find the monthly revenue for each sequence start and end month.
+			SELECT
+				rs.customer_id,
+				rs.sequence_start_month,
+				cs_start.total_revenue AS sequence_start_revenue,
+				rs.sequence_end_month,
+				cs_end.total_revenue AS sequence_end_revenue,
+				rs.sequence_length,
+				cs_end.last_active_month
+			FROM revenue_streak_stats rs
+			JOIN customer_stats cs_start
+				ON cs_start.customer_id = rs.customer_id
+				AND cs_start.order_month = rs.sequence_start_month
+			JOIN customer_stats cs_end
+				ON cs_end.customer_id = rs.customer_id
+				AND cs_end.order_month = rs.sequence_end_month
+		),
+		qualifying_streaks AS (
+			-- Calculate the longest valid sequence for each customer (25% total
+			-- revenue increase ending with the last active month).
+			SELECT DISTINCT
+				customer_id,
+				sequence_start_month,
+				sequence_start_revenue,
+				sequence_end_month,
+				sequence_end_revenue,
+				sequence_length,
+				MAX(sequence_length) OVER (
+					PARTITION BY customer_id
+				) AS longest_valid_sequence
+			FROM customer_revenue_streaks
+			WHERE
+				sequence_end_revenue >= 1.25 * sequence_start_revenue
+				AND sequence_end_month = last_active_month
+		),
+		longest_streaks AS (
+			-- Find the longest valid streak for each customer.
+			SELECT
+				customer_id,
+				sequence_start_month,
+				sequence_start_revenue,
+				sequence_end_month,
+				sequence_end_revenue
+			FROM qualifying_streaks
+			WHERE sequence_length = longest_valid_sequence
+		)
+		
+		SELECT
+			cs.customer_id,
+			cs.active_month_count,
+			cs.avg_monthly_revenue,
+			ls.sequence_start_month,
+			ls.sequence_start_revenue,
+			ls.sequence_end_month,
+			ls.sequence_end_revenue
+		FROM (
+			SELECT DISTINCT
+				customer_id,
+				active_month_count,
+				avg_monthly_revenue
+			FROM customer_stats
+		) cs
+		JOIN longest_streaks ls
+			ON cs.customer_id = ls.customer_id;
+		```
+		- Interesting case of using a somewhat complex `JOIN` condition in `customer_revenue_streaks`. Instead of only joining on `customer_id`, we also require `order_month` and `sequence_start_month` / `sequence_end_month` to match.
+		- This is preferable and more clear than only joining on `customer_id`, then using a `CASE` statement to find the `sequence_start_revenue` / `sequence_end_revenue`.
+1. Find customers who, during **2026**, satisfy all of the following:
+	- Have at least **6 active months** with completed orders.
+	- Their **average monthly completed revenue** is at least **$1,000**.
+	- Have at least one **3+ month sequence of consecutive active months** where:
+	    - Revenue **strictly decreases** from the first month to the second.
+	    - Revenue then **strictly increases every month afterward**.
+	    - The final month of the sequence has revenue at least **20% greater than the first month**.
+	- The sequence must end at the customer's **latest active month**.
+	- If multiple qualifying recovery sequences end at the latest month, return the **longest** one.
+	- Return: `customer_id | active_month_count | avg_monthly_revenue | recovery_start_month | recovery_start_revenue | recovery_end_month | recovery_end_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+		    -- Filter for 2026 completed orders.
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_stats AS (
+		    -- Calculate total revenue for each customer month.
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+		    -- Calculate active month count and average monthly revenue for each customer.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        LEAD(order_month) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS next_month,
+		        LEAD(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS next_month_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        AVG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS avg_monthly_revenue,
+		        MAX(order_month) OVER (
+		            PARTITION BY customer_id
+		        ) AS last_active_month
+		    FROM monthly_stats
+		),
+		decreasing_revenue AS (
+		    /*
+		        Determine whether months are consecutive and whether revenue decreases from month to month.
+		        Only make this determination for customers with at least 6 active months and an average monthly revenue of at least $1,000.
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        next_month,
+		        (
+		            CASE
+		                WHEN
+		                    next_month = DATE_ADD(order_month, INTERVAL 1 MONTH)
+		                    AND next_month_revenue < total_revenue
+		                THEN 1
+		                ELSE 0
+		            END
+		        ) AS is_revenue_decrease,
+		        (
+		            CASE
+		                WHEN
+		                    next_month = DATE_ADD(order_month, INTERVAL 1 MONTH)
+		                    AND next_month_revenue > total_revenue
+		                THEN 1
+		                ELSE 0
+		            END
+		        ) AS is_revenue_increase
+		    FROM customer_stats
+		    WHERE
+		        active_month_count >= 6
+		        AND avg_monthly_revenue >= 1000
+		),
+		revenue_trend AS (
+		    /*
+		        A valid revenue streak occurs when the revenue drops from the first month to the second month,
+		        then increases continuously afterwards. Months must also be consecutive calendar months.
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        next_month,
+		        (
+		            CASE
+		                WHEN
+		                    next_month = DATE_ADD(order_month, INTERVAL 1 MONTH)
+		                    AND is_revenue_decrease = 1
+		                THEN 1
+		                WHEN
+		                    next_month = DATE_ADD(order_month, INTERVAL 1 MONTH)
+		                    AND is_revenue_increase = 1
+		                THEN 0
+		                ELSE 1
+		            END
+		        ) AS new_streak
+		    FROM decreasing_revenue
+		),
+		revenue_streak AS (
+		    -- Determine the streak ID for each valid revenue streak.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        next_month,
+		        SUM(new_streak) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS streak_id
+		    FROM revenue_trend
+		),
+		revenue_streak_stats AS (
+		    /*
+		        Determine streak length, start month, and end month for each streak.
+		        Each valid streak should consist of at least 3 months.
+		        The start month is the month before the revenue decrease, not the one after.
+		    */
+		    SELECT
+		        customer_id,
+		        streak_id,
+		        COUNT(order_month) AS streak_length,
+		        MIN(order_month) AS recovery_start_month,
+		        MAX(next_month) AS recovery_end_month
+		    FROM revenue_streak
+		    GROUP BY
+		        customer_id,
+		        streak_id
+		    HAVING COUNT(order_month) >= 2
+		),
+		 customer_revenue_streak AS (
+		    /*
+		        Find the corresponding total revenue for the recovery start and end months.
+		        Only include streaks that end in the customer's last active month.
+		        Only include streaks that have a total revenue increase of at least 20%
+		    */
+		    SELECT
+		        rs.customer_id,
+		        cs_start.active_month_count,
+		        cs_start.avg_monthly_revenue,
+		        rs.recovery_start_month,
+		        cs_start.total_revenue AS recovery_start_revenue,
+		        rs.recovery_end_month,
+		        cs_end.total_revenue AS recovery_end_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY rs.customer_id
+		            ORDER BY rs.streak_length DESC
+		        ) AS rnk
+		    FROM revenue_streak_stats rs
+		    JOIN customer_stats cs_start
+		        ON rs.customer_id = cs_start.customer_id
+		        AND rs.recovery_start_month = cs_start.order_month
+		    JOIN customer_stats cs_end
+		        ON rs.customer_id = cs_end.customer_id
+		        AND rs.recovery_end_month = cs_end.order_month
+		    WHERE
+		        rs.recovery_end_month = cs_end.last_active_month
+		        AND cs_end.total_revenue >= 1.2 * cs_start.total_revenue
+		 )
+		
+		 -- Select the longest qualifying streak for each customer
+		 SELECT
+		    customer_id,
+		    active_month_count,
+		    avg_monthly_revenue,
+		    recovery_start_month,
+		    recovery_start_revenue,
+		    recovery_end_month,
+		    recovery_end_revenue
+		 FROM customer_revenue_streak
+		 WHERE rnk = 1;
+		```
+		- Another interesting problem similar to the one above, except the streak needs to start with one initial decrease, followed by continuous increases.
+		- `HAVING COUNT(order_month) >= 2` is used in `revenue_streak_stats` because each row represents a **transition**, not an individual month.
+1. Find customers who, during **2026**, satisfy all of the following:
+	- Have at least **7 active months** with completed orders.
+	- Their **average monthly completed revenue** is at least **$1,000**.
+	- Their monthly revenue is **strictly increasing** for at least **3 consecutive active calendar months**.
+	- They may have **exactly one decrease** in revenue during the year.
+	- After that decrease, revenue must **recover**:
+	    - the next active calendar month must have higher revenue than the decreased month, and
+	    - the recovery must continue with **at least one additional increase**.
+	- The customer's **latest active month must be the end of the recovery sequence**.
+	- The recovery sequence must contain at least **3 months total**.
+	- Return the **most recent qualifying recovery sequence**.
+	- Return: `customer_id | active_month_count | avg_monthly_revenue | recovery_start_month | recovery_start_revenue | recovery_end_month | recovery_end_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		WITH filtered_orders AS (
+		    -- Filtered for 2026 completed orders.
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_stats AS (
+		    -- Calculate total revenue for each customer month.
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+		    -- Calculate active month count and average monthly revenue for each customer.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        LAG(order_month) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_month,
+		        total_revenue,
+		        LAG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS previous_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        AVG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS avg_monthly_revenue,
+		        MAX(order_month) OVER (
+		            PARTITION BY customer_id
+		        ) AS last_active_month
+		    FROM monthly_stats
+		),
+		revenue_changes AS (
+		    /*
+		        Determine whether there is a revenue increase or decrease from one month to the next consecutive calendar.
+		        Only make this determination for customers with at least 7 active months and average monthly revenue of at least $1,000.
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        (
+		            CASE
+		                WHEN
+		                    order_month = DATE_ADD(previous_month, INTERVAL 1 MONTH)
+		                    AND previous_revenue < total_revenue
+		                THEN 'increase'
+		                WHEN
+		                    order_month = DATE_ADD(previous_month, INTERVAL 1 MONTH)
+		                    AND previous_revenue > total_revenue
+		                THEN 'decrease'
+		                ELSE 'invalid'
+		            END
+		        ) AS revenue_change
+		    FROM customer_stats
+		    WHERE
+		        active_month_count >= 7
+		        AND avg_monthly_revenue >= 1000
+		),
+		customer_decrease_counts AS (
+		    -- Count the total number of revenue decreases per customer.
+		    SELECT
+		        customer_id,
+		        SUM(
+		            CASE
+		                WHEN revenue_change = 'decrease' THEN 1
+		                ELSE 0
+		            END
+		        ) AS decrease_count
+		    FROM revenue_changes
+		    GROUP BY customer_id
+		),
+		eligible_changes AS (
+		    -- Filter for customers with exactly 1 decrease.
+		    SELECT
+		        rc.customer_id,
+		        rc.order_month,
+		        rc.revenue_change
+		    FROM revenue_changes rc
+		    JOIN customer_decrease_counts dc
+		        ON rc.customer_id = dc.customer_id
+		    WHERE dc.decrease_count = 1
+		),
+		invalid_groups AS (
+		    -- Assign a new group after each invalid change.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        revenue_change,
+		        SUM(
+		            CASE
+		                WHEN revenue_change = 'invalid' THEN 1
+		                ELSE 0
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS invalid_group
+		    FROM eligible_changes
+		),
+		decrease_groups AS (
+		    -- Within each invalid group, identify the portion beginning with the decrease.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        revenue_change,
+		        invalid_group,
+		        SUM(
+		            CASE
+		                WHEN revenue_change = 'decrease' THEN 1
+		                ELSE 0
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id, invalid_group
+		            ORDER BY order_month
+		        ) AS decrease_group
+		    FROM invalid_groups
+		),
+		valid_revenue_changes AS (
+		    -- Filter out invalid revenue changes after using them as streak boundaries.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        revenue_change,
+		        invalid_group,
+		        decrease_group
+		    FROM decrease_groups
+		    WHERE revenue_change != 'invalid'
+		),
+		streak_stats AS (
+		    -- Find recovery streaks containing the decrease and at least 3 subsequent increases.
+		    SELECT
+		        customer_id,
+		        invalid_group,
+		        decrease_group,
+		        MIN(order_month) AS recovery_start_month,
+		        MAX(order_month) AS recovery_end_month,
+		        COUNT(*) AS streak_length
+		    FROM valid_revenue_changes
+		    WHERE decrease_group > 0
+		    GROUP BY
+		        customer_id,
+		        invalid_group,
+		        decrease_group
+		    HAVING COUNT(*) >= 4
+		),
+		customer_streaks AS (
+		    /*
+		        Find the revenue for each start and end month.
+		        The customer's last active month must be the end of a recovery sequence.
+		    */
+		    SELECT
+		        ss.customer_id,
+		        cs_start.active_month_count,
+		        cs_start.avg_monthly_revenue,
+		        ss.recovery_start_month,
+		        cs_start.total_revenue AS recovery_start_revenue,
+		        ss.recovery_end_month,
+		        cs_end.total_revenue AS recovery_end_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY streak_length DESC
+		        ) AS rnk
+		    FROM streak_stats ss
+		    JOIN customer_stats cs_start
+		        ON ss.customer_id = cs_start.customer_id
+		        AND ss.recovery_start_month = cs_start.order_month
+		    JOIN customer_stats cs_end
+		        ON ss.customer_id = cs_end.customer_id
+		        AND ss.recovery_end_month = cs_end.order_month
+		    WHERE ss.recovery_end_month = cs_end.last_active_month
+		)
+		
+		-- Select the most recent streak for each customer.
+		SELECT
+		    customer_id,
+		    active_month_count,
+		    avg_monthly_revenue,
+		    recovery_start_month,
+		    recovery_start_revenue,
+		    recovery_end_month,
+		    recovery_end_revenue
+		FROM customer_streaks
+		WHERE rnk = 1;
+		```
+		1. `invalid_groups` creates groups separated by invalid changes, such as missing calendar months, flat revenue, or a customer's first month.
+		2. `decrease_groups` isolates the portion of an `invalid_group` that starts with a decrease. Since the only other type of change is `increase`, the decrease must be followed by increases.
 
 ## Conditional Aggregation Problems
 
