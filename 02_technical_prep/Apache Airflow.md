@@ -1014,3 +1014,42 @@
 		- Why are we storing datasets in Airflow?
 		- Can we redesign the pipeline?
 	- Deleting XComs solves the symptoms, not the disease.
+
+## Course DAG example
+
+Source: `dea-general-learning/Airflow/airflow_introduction.md`. This example uses the `airflow.sdk` import style from the original lesson.
+
+```python
+# Import all packages needed at the top level of the DAG
+from airflow.sdk import DAG
+from airflow.providers.standard.operators.python import PythonOperator
+from pendulum import datetime
+
+def my_task_1_func():
+    import time  # import packages only needed in the task function
+    time.sleep(5)
+    print(1)
+
+# Instantiate the DAG
+with DAG(
+    dag_id="traditional_syntax_dag",
+    start_date=datetime(2025, 4, 1),
+    schedule="@daily",
+
+):
+    # Instantiate tasks within the DAG context
+    my_task_1 = PythonOperator(
+        task_id="my_task_1",
+        python_callable=my_task_1_func,
+    )
+  
+    my_task_2 = PythonOperator(
+        task_id="my_task_2",
+        python_callable=lambda: print(2),
+    )
+
+    # Define dependencies
+    my_task_1 >> my_task_2 # Ensures task 2 runs after task 1.
+```
+
+The original lesson also uses the UI to inspect DAG runs, task states, logs, code, connections, and variables. Its `dag_id`, `start_date`, and `schedule` parameters identify and schedule the workflow.

@@ -115,3 +115,11 @@ df_grouped.show()
 ### 🚨 Row-by-Row Iteration (`.iterrows()` in Pandas)
 * **The Pitfall:** Using `for index, row in df.iterrows():` to transform data scales poorly. It loops through data point by data point in pure Python, discarding vectorized performance optimizations.
 * **The Fix:** Use built-in vectorized column expressions or the `.apply()` method to run batch computations down columns natively in C/Rust.
+
+## Related lessons and practice
+
+- [[02_technical_prep/python/Python Fundamentals]]
+- [[02_technical_prep/python/Pandas DataFrame Fundamentals]]
+- [[02_technical_prep/python/Python Fundamentals Practice]]
+- [[02_technical_prep/python/Pandas Practice Exercises]]
+- [[02_technical_prep/python/Pandas Interview Practice]]

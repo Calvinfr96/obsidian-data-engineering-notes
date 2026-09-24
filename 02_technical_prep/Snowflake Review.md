@@ -1833,3 +1833,12 @@ You should be able to answer these without notes:
 If the interviewer asks you to summarize Snowflake, a strong closing answer is:
 
 > "The main thing I associate with Snowflake is separation of storage and compute. Snowflake stores data in compressed micro-partitions and maintains metadata that allows it to prune irrelevant data during queries. Compute is provided through independent virtual warehouses, so I can isolate ETL, BI, and other workloads and scale compute separately from storage. On top of that architecture, Snowflake provides native capabilities for ingestion with stages, COPY and Snowpipe; incremental processing with Streams and Tasks; recovery with Time Travel and Fail-safe; development isolation with zero-copy cloning; and security through RBAC and policies such as row access and masking. As a data engineer, I'd choose among those features based on latency, workload, concurrency, recoverability, security, and cost requirements."
+
+## Related lessons and practice
+
+- [[02_technical_prep/snowflake/Snowflake Worked Examples]]
+- [[02_technical_prep/snowflake/Snowflake Mini Project 1]]
+- [[02_technical_prep/snowflake/Snowflake Mini Project 2]]
+- [[02_technical_prep/snowflake/Snowflake Mini Project 3]]
+- [[02_technical_prep/snowflake/Snowflake Mini Project 4]]
+- [[02_technical_prep/snowflake/Snowflake Mini Project 5]]

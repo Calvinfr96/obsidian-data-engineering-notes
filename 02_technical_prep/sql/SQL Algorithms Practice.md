@@ -1872,6 +1872,421 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 		```
 		1. `invalid_groups` creates groups separated by invalid changes, such as missing calendar months, flat revenue, or a customer's first month.
 		2. `decrease_groups` isolates the portion of an `invalid_group` that starts with a decrease. Since the only other type of change is `increase`, the decrease must be followed by increases.
+1. Find customers who, during **2026**, satisfy all of the following:
+	- Have at least **8 active months** with completed orders.
+	- Their **average monthly completed revenue** is at least **$1,000**.
+	- Their **latest 4 active months** must be **consecutive calendar months**.
+	- Revenue across those latest 4 months must be **strictly increasing**.
+	- The latest month's revenue must be at least **40% greater** than the first of those 4 months.
+	- The average revenue of the latest 4 months must be at least **25% greater** than the average revenue of the previous 4 active months.
+	- The latest active month must have revenue of at least **$1,500**.
+	- Return: `customer_id | active_month_count | avg_monthly_revenue | previous_4_month_avg | latest_4_month_avg | latest_4_start_month | latest_4_start_revenue | latest_active_month | latest_month_revenue` 
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		/*
+		    1. Filter for 2026 completed orders.
+		    2. Find average monthly revenue for each customer.
+		    3. Filter for customers with at least 8 active months and an average monthly revenue of at least $1,000.
+		    4. A customer's latest 4 active months must be:
+		        a. Consecutive calendar months.
+		        b. Have strictly increasing revenue.
+		        c. The last month revenue should be 40% higher than the first month.
+		        d, Last active month must have a revenue of at least $1,500.
+		    5. Average revenue of the last 4 months must be 25% higher than the average revenue of the previous 4 months.
+		    
+		    Return:
+		        customer_id
+		        active_month_count
+		        avg_monthly_revenue
+		        previous_4_month_avg
+		        latest_4_month_avg
+		        latest_4_start_month
+		        latest_4_start_revenue
+		        latest_active_month
+		        latest_month_revenue
+		*/
+		
+		WITH filtered_orders AS (
+		    -- Filter for 2026 completed orders.
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_stats AS (
+		    -- Find total revenue for each customer month.
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+		    -- Find active month count, average monthly revenue, and latest active month for each customer.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        AVG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS avg_monthly_revenue,
+		        MAX(order_month) OVER (
+		            PARTITION BY customer_id
+		        ) AS latest_active_month
+		    FROM monthly_stats
+		),
+		latest_monthly_revenue AS (
+		    /*
+		        Find the total revenue associated with the latest active month.
+		        Filter for customers with at least 8 active months and an average monthly revenue of at least $1,000.
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        avg_monthly_revenue,
+		        latest_active_month,
+		        MAX(
+		            CASE
+		                WHEN order_month = latest_active_month THEN total_revenue
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		        ) AS latest_month_revenue
+		    FROM customer_stats
+		    WHERE
+		        active_month_count >= 8
+		        AND avg_monthly_revenue >= 1000
+		),
+		filtered_customers AS (
+		    -- Filter for customers with a latest month's revenue of at least $1,500
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        avg_monthly_revenue,
+		        latest_active_month,
+		        latest_month_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month DESC
+		        ) AS rnk
+		    FROM latest_monthly_revenue
+		    WHERE latest_month_revenue >= 1500
+		),
+		latest_8_months AS (
+		    -- Select a customer's latest 8 months of activity.
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        rnk
+		    FROM filtered_customers
+		    WHERE rnk <= 8
+		),
+		latest_4_months AS (
+		    -- Find the revenues for each of the 4 latest months.
+		    SELECT
+		        customer_id,
+		        MIN(order_month) OVER(
+		            PARTITION BY customer_id
+		        ) AS latest_4_start_month,
+		        total_revenue,
+		        LEAD(order_month) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS month_2,
+		        LEAD(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS revenue_2,
+		        LEAD(order_month, 2) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS month_3,
+		        LEAD(total_revenue, 2) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS revenue_3,
+		        LEAD(order_month, 3) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS month_4,
+		        LEAD(total_revenue, 3) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS revenue_4,
+		        AVG(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS latest_4_month_avg
+		    FROM latest_8_months
+		    WHERE rnk BETWEEN 1 AND 4
+		),
+		eligible_latest_4_months AS (
+		    /*
+		        Filter for the latest 4 month streak as follows:
+		            1. Months must be consecutive calendar months.
+		            2. Months must strictly increase in revenue.
+		            3. The last month should be 40% greater the first month
+		    */
+		    SELECT
+		        customer_id,
+		        latest_4_start_month,
+		        total_revenue AS latest_4_start_revenue,
+		        latest_4_month_avg
+		    FROM latest_4_months
+		    WHERE
+		        order_month = latest_4_start_month
+		        AND month_2 = DATE_ADD(order_month, INTERVAL 1 MONTH)
+		        AND month_3 = DATE_ADD(month_2, INTERVAL 1 MONTH)
+		        AND month_4 = DATE_ADD(month_3, INTERVAL 1 MONTH)
+		        AND revenue_2 > total_revenue
+		        AND revenue_3 > revenue_2
+		        AND revenue_4 > revenue_3
+		        AND revenue_4 >= 1.4 * total_revenue
+		),
+		previous_4_months AS (
+		    -- Find the average total revenue of the previous (not necessarily consecutive) 4 months.
+		    SELECT
+		        customer_id,
+		        AVG(total_revenue) AS previous_4_month_avg
+		    FROM latest_8_months
+		    WHERE rnk BETWEEN 5 AND 8
+		    GROUP BY customer_id
+		)
+		
+		-- The last 4 month average must be at least 25% greater than the previous 4 month average.
+		SELECT
+		    fc.customer_id,
+		    fc.active_month_count,
+		    fc.avg_monthly_revenue,
+		    p4.previous_4_month_avg,
+		    l4.latest_4_month_avg,
+		    l4.latest_4_start_month,
+		    l4.latest_4_start_revenue,
+		    fc.latest_active_month,
+		    fc.latest_month_revenue
+		FROM (
+		    SELECT DISTINCT
+		        customer_id,
+		        active_month_count,
+		        avg_monthly_revenue,
+		        latest_active_month,
+		        latest_month_revenue
+		    FROM filtered_customers
+		) AS fc
+		JOIN previous_4_months AS p4
+		    ON fc.customer_id = p4.customer_id
+		JOIN eligible_latest_4_months AS l4
+		    ON fc.customer_id = l4.customer_id
+		WHERE l4.latest_4_month_avg >= 1.25 * p4.previous_4_month_avg;
+		```
+1. Find customers who, during **2026**, satisfy all of the following:
+	- Have at least **8 active months** with completed orders.
+	- Their **total completed revenue** for 2026 is at least **$12,000**.
+	- Calculate each customer's **cumulative monthly revenue** in chronological order.
+	- Find the **first active month** where cumulative revenue reaches or exceeds **60% of the customer's total 2026 revenue**.
+	- That threshold-crossing month must be the customer's **5th active month or later**.
+	- There must be at least **2 active months after** the threshold-crossing month.
+	- The customer's **latest active month's revenue** must be at least as high as the revenue in the threshold-crossing month.
+	- Return: `customer_id | active_month_count | total_2026_revenue | threshold_month | threshold_month_revenue | cumulative_revenue_at_threshold | latest_active_month | latest_month_revenue`
+	- `orders`: `[order_id, customer_id, order_date, amount, status]`
+		- `order_id` INT
+		- `customer_id`: INT
+		- `order_date`: DATE (YYYY-MM-DD)
+		- `amount`: INT
+		- `status`: VARCHAR(30)
+	- Solution:
+		```sql
+		/*
+		    1. Filter for 2026 completed orders.
+		    2. For each customer/month, calculate:
+		        a. Total monthly revenue. (done)
+		        b. Total active months. (done)
+		        c. Total yearly revenue. (done)
+		        d. First active month where cumulative revenue is 60% of total yearly revenue.
+		            i. Must be customer's 5th active month or later. (done)
+		            ii. Must be 2 active months after this month. (done)
+		        d, Latest active month revenue must be >= threshold-crossing revenue.
+		    3. Filter for customers based on the following:
+		        a. Total active months >= 8. (done)
+		        b. Total yearly revenue >= $12,000. (done)
+		    
+		    Return:
+		        customer_id
+		        active_month_count
+		        total_2026_revenue
+		        threshold_month
+		        threshold_month_revenue
+		        cumulative_revenue_at_threshold
+		        latest_active_month
+		        latest_month_revenue
+		*/
+		
+		WITH filtered_orders AS (
+		    -- Filter for 2026 completed orders.
+		    SELECT
+		        order_id,
+		        customer_id,
+		        order_date,
+		        amount
+		    FROM orders
+		    WHERE
+		        order_date >= '2026-01-01'
+		        AND order_date < '2027-01-01'
+		        AND status = 'completed'
+		),
+		monthly_stats AS (
+		    -- Calculate total revenue for each customer and month.
+		    SELECT
+		        customer_id,
+		        DATE_TRUNC('month', order_date) AS order_month,
+		        SUM(amount) AS total_revenue
+		    FROM filtered_orders
+		    GROUP BY
+		        customer_id,
+		        DATE_TRUNC('month', order_date)
+		),
+		customer_stats AS (
+		    /*
+		        Calculate the following for each customer:
+		            a. active month count,
+		            b. total yearly revenue
+		            c. last active month
+		            d. cumulative monthly revenue
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        COUNT(*) OVER (
+		            PARTITION BY customer_id
+		        ) AS active_month_count,
+		        SUM(total_revenue) OVER (
+		            PARTITION BY customer_id
+		        ) AS total_2026_revenue,
+		        MAX(order_month) OVER (
+		            PARTITION BY customer_id
+		        ) AS latest_active_month,
+		        SUM(total_revenue) OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+		        ) AS cumulative_revenue,
+		        ROW_NUMBER() OVER (
+		            PARTITION BY customer_id
+		            ORDER BY order_month
+		        ) AS month_num
+		    FROM monthly_stats
+		),
+		filtered_customers AS (
+		    /*
+		        1. Filter for customers with at least 8 active months and $12,000 in yearly revenue.
+		        2. Find the total revenue associated with the last month.
+		    */
+		    SELECT
+		        customer_id,
+		        order_month,
+		        total_revenue,
+		        active_month_count,
+		        total_2026_revenue,
+		        latest_active_month,
+		        cumulative_revenue,
+		        month_num,
+		        MAX(
+		            CASE
+		                WHEN order_month = latest_active_month THEN total_revenue
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		        ) AS latest_month_revenue,
+		        MIN(
+		            CASE
+		                WHEN (cumulative_revenue * 1.0 / total_2026_revenue) >= 0.6 THEN month_num
+		            END
+		        ) OVER (
+		            PARTITION BY customer_id
+		        ) AS threshold_month_num
+		    FROM customer_stats
+		    WHERE
+		        active_month_count >= 8
+		        AND total_2026_revenue >= 12000
+		),
+		threshold_month_stats AS (
+		    /*
+		        3. Calculate the threshold month and its associated revenue.
+		        4. Ensure the threshold month is at least the customer's 5th active month.
+		        5. Ensure the threshold month has at least 2 months following it.
+		    */
+		    SELECT
+		        customer_id,
+		        MAX(
+		            CASE
+		                WHEN month_num = threshold_month_num THEN order_month
+		            END
+		        ) AS threshold_month,
+		        MAX(
+		            CASE
+		                WHEN month_num = threshold_month_num THEN total_revenue
+		            END
+		        ) AS threshold_month_revenue
+		    FROM filtered_customers
+		    WHERE
+		        threshold_month_num >= 5
+		        AND threshold_month_num <= active_month_count - 2
+		    GROUP BY customer_id
+		),
+		eligible_customers AS (
+		    /*
+		        6. Calculate the cumulative revenue at the threshold month.
+		        7. Filter for customers where the last active month revenue is at least the threshold month revenue.
+		    */
+		    SELECT
+		        fc.customer_id,
+		        fc.active_month_count,
+		        fc.total_2026_revenue,
+		        tm.threshold_month,
+		        tm.threshold_month_revenue,
+		        fc.cumulate_revenue AS cumulative_revenue_at_threshold,
+		        fc.latest_active_month,
+		        fc.latest_month_revenue
+		    FROM filtered_customers fc
+		    JOIN threshold_month_stats tm
+		        ON fc.customer_id = tm.customer_id
+		    WHERE fc.latest_month_revenue >= tm.threshold_month_revenue
+		)
+		
+		SELECT
+		    customer_id,
+		    active_month_count,
+		    total_2026_revenue,
+		    threshold_month,
+		    threshold_month_revenue,
+		    cumulative_revenue_at_threshold,
+		    latest_active_month,
+		    latest_month_revenue
+		FROM eligible_customers;
+		```
 
 ## Conditional Aggregation Problems
 
@@ -3225,3 +3640,8 @@ While practicing problems, note difficult concepts with unrecognized patterns.
 - When a problem says: "If dates are tied, use the larger order ID."
 	- You can't just use: `ORDER BY order_date DESC;`
 	- You need: `ORDER BY order_date DESC order_id DESC;`. You need more than one condition to break the tie.
+
+## Related lessons and practice
+
+- [[02_technical_prep/sql/SQL Problem-Solving Walkthroughs]]
+- [[02_technical_prep/sql/SQL Interview Practice Problems]]

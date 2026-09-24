@@ -1462,3 +1462,9 @@ For your Data Engineering interviews, **Tier 1 + scenario questions** should be 
 
 > **Interview mindset:**  
 > **Problem → Databricks capability → why it fits → trade-offs → operational considerations.**
+
+## Related lessons and practice
+
+- [[02_technical_prep/spark_databricks/PySpark and Databricks Labs]]
+- [[02_technical_prep/spark_databricks/Delta Lake Labs]]
+- [[02_technical_prep/spark_databricks/Lakeflow Pipeline Labs]]

@@ -4653,3 +4653,26 @@ Always ask: **What guarantees does the business require**?
 | API-specific authorization      | Limited | ✅                       |
 | Request/response transformation | Limited | ✅                       |
 | Serverless API front door       | —       | ✅                       |
+
+## ECS, ECR, and resource tags
+
+### Containers and orchestration
+
+ECR stores container images; ECS runs and manages tasks made from those images. Scaling a service adds running tasks rather than creating more image versions. A task definition specifies the containers and their configuration; a task is a running instance of that definition. A cluster groups the compute and tasks used by your workloads. See [AWS task definitions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definitions.html).
+
+- With **EC2**, you manage the capacity on which containers run.
+- With **Fargate**, you specify task resources while AWS manages the underlying servers.
+- The **task role** grants your application permission to call AWS services, such as reading S3. See [task IAM roles](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html).
+- The **task execution role** lets ECS/Fargate perform startup operations such as pulling images and delivering logs. See [task execution roles](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html).
+
+### Resource tags
+
+Tags are key-value metadata used to identify resources by project, environment, or owner. Resource Groups can group related resources. Tags help identify resources for cleanup; tagging alone does not delete them.
+
+Adapted from `dea-general-learning/AWS/aws_notes.md`; clarified the original ECS task-role and image/container descriptions.
+
+Setup examples: [[02_technical_prep/AWS Setup Walkthroughs]]
+
+## Related lessons and practice
+
+- [[02_technical_prep/AWS Setup Walkthroughs]]

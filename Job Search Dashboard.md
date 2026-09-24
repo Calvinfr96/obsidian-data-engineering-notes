@@ -1,3 +1,7 @@
+## Study notes
+
+[[Data Engineering Study Guide|Open the data engineering study guide]]
+
 ## Active Applications
 ```dataview
 TABLE role AS "Position", status AS "Interview Stage", applied_date AS "Date Applied"

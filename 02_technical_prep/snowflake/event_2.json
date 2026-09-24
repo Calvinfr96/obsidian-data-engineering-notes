@@ -1,0 +1,6 @@
+{
+  "type": "WARNING",
+  "messageId": "msg-002",
+  "message": "S3 bucket connection took longer than expected.",
+  "timestamp": "2025-11-11T06:31:10Z"
+}

@@ -153,3 +153,8 @@
 ## Step 12: Explain tradeoffs
 
 - If multiple technologies were considered for the same business requirement, explain the tradeoffs of using one vs the other.
+
+## Related lessons and practice
+
+- [[02_technical_prep/system_design/Data Architecture Worked Examples]]
+- [[02_technical_prep/system_design/System Design Case Studies]]

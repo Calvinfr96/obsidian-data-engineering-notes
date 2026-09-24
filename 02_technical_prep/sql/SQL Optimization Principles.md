@@ -85,3 +85,10 @@ When working with large data warehouses (Snowflake, BigQuery, Redshift), perform
 ### 🚨 `NOT IN` vs. `NOT EXISTS` with Nulls
 * **The Trap:** If a subquery returns even a single `NULL` value, a `WHERE column NOT IN (subquery)` expression evaluates to completely empty and returns 0 rows due to three-valued logic (`TRUE`, `FALSE`, `UNKNOWN`).
 * **The Fix:** Use `NOT EXISTS` or a `LEFT JOIN ... WHERE right_table.key IS NULL`, which handle null values reliably without breaking your filter logic.
+
+## Related lessons and practice
+
+- [[02_technical_prep/sql/SQL Database Essentials]]
+- [[02_technical_prep/sql/SQL Beginner Lessons]]
+- [[02_technical_prep/sql/SQL Intermediate Lessons]]
+- [[02_technical_prep/sql/SQL Advanced Lessons]]

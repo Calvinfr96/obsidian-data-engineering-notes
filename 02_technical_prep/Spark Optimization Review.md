@@ -1247,3 +1247,8 @@ For interviews, **Tier 1 + scenarios** matter more than memorizing every tuning 
 > **Evidence → bottleneck → root cause → targeted fix → validation.**
 
 The source PDF's strongest interview message is exactly this diagnostic mindset: understand *why* the job is slow and use Spark UI/runtime evidence instead of trial-and-error tuning.
+
+## Related lessons and practice
+
+- [[02_technical_prep/spark_databricks/PySpark and Databricks Labs]]
+- [[02_technical_prep/spark_databricks/Delta Lake Labs]]

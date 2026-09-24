@@ -1925,3 +1925,8 @@ Safe evolution
 		- Changing data types.
 		- Adding required fields without default values.
 			- A phased rollout mitigates the risk. Provide a default value until all consumers have updated their schemas, then remove the default field.
+
+## Related lessons and practice
+
+- [[02_technical_prep/data_modeling/Data Modeling Interview Guidance]]
+- [[02_technical_prep/data_modeling/Data Modeling Practice Questions]]
