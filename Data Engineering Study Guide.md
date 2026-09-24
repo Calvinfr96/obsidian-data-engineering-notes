@@ -103,3 +103,8 @@ Start with an existing review, then use the linked lessons when you need a refre
 - [[03_behavioral/Resume Retrospective]]
 - [[01_job_hunting/Interview and Job Search Advice]]
 - [[00_daily_logs/Daily Review Template]]
+
+## Current preparation plan
+
+- [[Six Week Interview Study Plan|Six-week plan — 30 hours per week]]
+- [[Interview Preparation Audit|Materials audit and priorities]]

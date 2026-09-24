@@ -17,3 +17,8 @@ FROM "01_Job_Hunting"
 WHERE status = "❌ Rejected"
 SORT applied_date DESC
 ```
+
+## Current preparation plan
+
+- [[Six Week Interview Study Plan|Six-week plan — 30 hours per week]]
+- [[Interview Preparation Audit|Materials audit and priorities]]
